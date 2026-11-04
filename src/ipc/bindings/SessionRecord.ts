@@ -3,4 +3,8 @@ import type { EndReason } from "./EndReason";
 import type { Outcome } from "./Outcome";
 import type { SessionKind } from "./SessionKind";
 
-export type SessionRecord = { id: string, kind: SessionKind, taskLabel?: string, startedAt: string, endedAt: string, plannedMs: number, activeMs: number, outcome: Outcome, endReason: EndReason, };
+export type SessionRecord = { id: string, kind: SessionKind, taskLabel?: string, startedAt: string, endedAt: string, plannedMs: number, activeMs: number, outcome: Outcome, endReason: EndReason, 
+/**
+ * Local UTC offset (minutes) when the record was written; decides its local day.
+ */
+endedUtcOffsetMinutes?: number, };

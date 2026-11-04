@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::clock::Wall;
+use crate::palette::PaletteSpec;
 
 /// The unlock manifest shipped with the app.
 pub const BUILTIN_UNLOCKS_JSON: &str = include_str!("../../../data/unlocks.json");
@@ -43,6 +44,10 @@ pub struct UnlockDef {
     pub trigger: String,
     pub label: String,
     pub description: String,
+    /// Default colors for `kind: palette` unlocks (packs may override per field).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub palette: Option<PaletteSpec>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

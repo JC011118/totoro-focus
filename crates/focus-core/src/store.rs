@@ -49,8 +49,11 @@ pub enum LoadNote {
     Migrated { from: u32 },
     /// Unreadable or invalid JSON: moved aside to `backup`, defaults used.
     CorruptBackedUp { backup: PathBuf, error: String },
-    /// Written by a newer app version: moved aside to `backup`, defaults used.
-    NewerSchemaBackedUp { backup: PathBuf, version: u32 },
+    /// Written by a newer app version: copied aside to `backup`, defaults used, and
+    /// the store is read-only for this run (never overwrite newer data with lower totals).
+    NewerSchemaReadOnly { backup: PathBuf, version: u32 },
+    /// `state.json` was corrupt (moved to `backup`); `state.prev.json` was loaded instead.
+    RecoveredFromPrevious { backup: PathBuf, error: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,16 +70,32 @@ pub enum StoreError {
     Invalid(String),
     #[error("state file schema {0} is newer than this app supports")]
     NewerSchema(u32),
+    #[error("saving is disabled: the state file was written by a newer version")]
+    ReadOnly,
 }
 
-#[derive(Debug, Clone)]
+pub const PREV_FILE: &str = "state.prev.json";
+
+#[derive(Debug)]
 pub struct Store {
     dir: PathBuf,
+    /// Set after the first save of this process copied `state.json` to `state.prev.json`.
+    prev_copied: std::sync::atomic::AtomicBool,
+    /// Set by `load` when the file came from a newer schema.
+    read_only: std::sync::atomic::AtomicBool,
 }
 
 impl Store {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        Self {
+            dir: dir.into(),
+            prev_copied: std::sync::atomic::AtomicBool::new(false),
+            read_only: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub fn is_read_only(&self) -> bool {
+        self.read_only.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn dir(&self) -> &Path {
@@ -87,16 +106,20 @@ impl Store {
         self.dir.join(STATE_FILE)
     }
 
-    /// Load the state file (creating nothing). Corrupt or newer-schema files are
-    /// renamed to `state.corrupt-<YYYYMMDDTHHMMSSZ>.json` next to it (with a
-    /// numeric suffix if that exists) and defaults are returned; never deleted.
+    /// Load the state file (creating nothing). A corrupt file is renamed to
+    /// `state.corrupt-<YYYYMMDDTHHMMSSZ>.json` (numeric suffix if taken), then
+    /// `state.prev.json` is tried, then defaults. A newer-schema file is copied to
+    /// `state.newer-<stamp>.json`, defaults are returned and the store becomes
+    /// read-only. Older schemas are migrated. Never deletes anything.
     pub fn load(&self, now: Wall) -> LoadReport {
         let _ = now;
         todo!("store: load")
     }
 
-    /// Atomic save: create dir if needed, write `state.json.tmp`, fsync, rename
-    /// over `state.json`, fsync the directory (best effort on platforms without it).
+    /// Atomic save: create dir if needed; on the first save of this process copy an
+    /// existing `state.json` to `state.prev.json`; write `state.json.tmp`, fsync,
+    /// rename over `state.json`, fsync the directory (best effort). `ReadOnly` error
+    /// when read-only.
     pub fn save(&self, state: &PersistedState) -> Result<(), StoreError> {
         let _ = state;
         todo!("store: save")

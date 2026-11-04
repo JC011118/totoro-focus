@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
@@ -15,6 +16,13 @@ export default defineConfig({
     // WKWebView on macOS 11+.
     target: ["es2021", "safari14"],
     sourcemap: false,
+    // Production pages only. dev.html (browser preview + mock backend) is never built.
+    rollupOptions: {
+      input: {
+        companion: resolve(__dirname, "companion.html"),
+        settings: resolve(__dirname, "settings.html"),
+      },
+    },
   },
   test: {
     environment: "jsdom",

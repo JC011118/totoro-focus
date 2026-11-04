@@ -39,6 +39,10 @@ pub struct SessionRecord {
     pub active_ms: u64,
     pub outcome: Outcome,
     pub end_reason: EndReason,
+    /// Local UTC offset (minutes) when the record was written; decides its local day.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub ended_utc_offset_minutes: Option<i32>,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -61,8 +65,11 @@ pub struct TodaySummary {
     pub active_focus_ms: u64,
     pub completed: u32,
     pub interrupted: u32,
-    /// One item per recorded focus session today, in end order (uncapped; the UI caps at 12).
+    /// One item per recorded focus session today, in history insertion order
+    /// (uncapped; the UI shows the first 12 then `+N`).
     pub harvest: Vec<HarvestItem>,
+    /// `format_focus_label(focus_ms + active_focus_ms)`, e.g. "1 h 05 min". Used by tray and UI.
+    pub focus_label: String,
 }
 
 /// Local calendar date of `at` under `offset`.
@@ -98,15 +105,16 @@ impl History {
         todo!("history: push_once")
     }
 
-    /// Newest first, at most `limit`.
+    /// Reverse insertion order (newest appended first), at most `limit`.
     pub fn recent(&self, limit: usize) -> Vec<SessionRecord> {
         let _ = limit;
         todo!("history: recent")
     }
 
     /// Summary for the local day containing `now`. Each record's day is the
-    /// local date of its `ended_at`, using `offset_at(ended_at)`; today's date
-    /// uses `offset_at(now)`. `active_focus_ms` is supplied by the caller.
+    /// local date of its `ended_at` under `ended_utc_offset_minutes` when present,
+    /// else `offset_at(ended_at)`; today's date uses `offset_at(now)`.
+    /// Insertion order, never sorted by timestamp. `active_focus_ms` is supplied by the caller.
     pub fn today(
         &self,
         now: Wall,

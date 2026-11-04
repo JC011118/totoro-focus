@@ -6,15 +6,19 @@
 
 pub mod clock;
 pub mod engine;
+pub mod events;
 pub mod geometry;
 pub mod history;
 pub mod packs;
+pub mod palette;
 pub mod rewards;
 pub mod settings;
 pub mod snapshot;
 pub mod store;
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit;
 pub mod timer;
 
 pub use clock::{Clock, FakeClock, Mono, Now, SystemClock, Wall};
-pub use engine::{Command, CommandError, Effect, Engine, EngineConfig, SoundCue, SystemEvent};
+pub use engine::{ActivityLevel, Command, CommandError, Effect, Engine, EngineConfig, SoundCue, SystemEvent};
 pub use snapshot::Snapshot;

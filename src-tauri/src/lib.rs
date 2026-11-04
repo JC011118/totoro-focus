@@ -24,7 +24,8 @@ pub fn run() {
             commands::show_companion,
             commands::hide_companion,
             commands::open_settings,
-            commands::set_text_input_active,
+            commands::set_hotkey_capture,
+            commands::reset_companion_position,
             commands::get_app_info,
             commands::quit_app,
         ])

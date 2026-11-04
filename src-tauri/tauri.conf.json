@@ -5,7 +5,7 @@
   "identifier": "io.github.jc011118.totorofocus",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
@@ -15,15 +15,29 @@
     "windows": [],
     "security": {
       "csp": "default-src 'self'; img-src 'self' pack: http://pack.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src ipc: http://ipc.localhost",
-      "assetProtocol": { "enable": false }
+      "assetProtocol": {
+        "enable": false
+      },
+      "devCsp": "default-src 'self'; img-src 'self' pack: http://pack.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self'; connect-src ipc: http://ipc.localhost ws://127.0.0.1:1420 http://127.0.0.1:1420"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "category": "Productivity",
     "shortDescription": "A calm offline focus timer with a desktop companion.",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
-    "macOS": { "minimumSystemVersion": "11.0" }
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    }
   }
 }

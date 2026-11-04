@@ -7,7 +7,8 @@
 use focus_core::engine::CommandError;
 use focus_core::history::SessionRecord;
 use focus_core::packs::{PackInfo, ResolvedPack};
-use focus_core::settings::SettingsPatch;
+use focus_core::events::SettingsTab;
+use focus_core::settings::UserSettingsPatch;
 use focus_core::snapshot::{AppInfo, Snapshot};
 use tauri::AppHandle;
 
@@ -55,8 +56,9 @@ pub fn dismiss(app: AppHandle) -> CmdResult<Snapshot> {
     todo!("shell: dismiss")
 }
 
+/// Renderer-editable settings only (hotkey, pack and position have dedicated paths).
 #[tauri::command]
-pub fn update_settings(app: AppHandle, patch: SettingsPatch) -> CmdResult<Snapshot> {
+pub fn update_settings(app: AppHandle, patch: UserSettingsPatch) -> CmdResult<Snapshot> {
     let _ = (app, patch);
     todo!("shell: update_settings")
 }
@@ -67,6 +69,14 @@ pub fn update_settings(app: AppHandle, patch: SettingsPatch) -> CmdResult<Snapsh
 pub fn set_hotkey(app: AppHandle, accelerator: Option<String>) -> CmdResult<Snapshot> {
     let _ = (app, accelerator);
     todo!("shell: set_hotkey")
+}
+
+/// While the settings hotkey recorder is active the global shortcut is unregistered
+/// (restored on false, on settings close, or after 30 s).
+#[tauri::command]
+pub fn set_hotkey_capture(app: AppHandle, active: bool) {
+    let _ = (app, active);
+    todo!("shell: set_hotkey_capture")
 }
 
 /// Newest first; default limit 50, max 500.
@@ -89,15 +99,16 @@ pub fn get_active_pack(app: AppHandle) -> ResolvedPack {
     todo!("shell: get_active_pack")
 }
 
-/// Persists `settings.activePack` and broadcasts `focus://pack-changed`.
+/// Persists `settings.activePack`, broadcasts `focus://pack-changed` and a snapshot.
+/// Unknown or invalid ids → `PackUnavailable`.
 #[tauri::command]
 pub fn set_active_pack(app: AppHandle, id: String) -> CmdResult<ResolvedPack> {
     let _ = (app, id);
     todo!("shell: set_active_pack")
 }
 
-/// Emits `focus://play {key}` to the companion. Refused (`SessionActive`) while a
-/// focus session is running: unlocks never play during active focus.
+/// Validated by `Engine::check_replay` (`FocusRunning`, `NotUnlocked`); shows the
+/// companion if hidden, then emits `focus://play {key}` to the companion only.
 #[tauri::command]
 pub fn replay_animation(app: AppHandle, key: String) -> CmdResult<()> {
     let _ = (app, key);
@@ -116,21 +127,19 @@ pub fn hide_companion(app: AppHandle) {
     todo!("shell: hide_companion")
 }
 
-/// Opens (or focuses) the settings window, optionally on `tab`
-/// (`general` | `history` | `companion` | `start`); emits `focus://open-tab`.
+/// Moves the companion to the default spot on the primary display and saves it.
 #[tauri::command]
-pub fn open_settings(app: AppHandle, tab: Option<String>) {
-    let _ = (app, tab);
-    todo!("shell: open_settings")
+pub fn reset_companion_position(app: AppHandle) {
+    let _ = app;
+    todo!("shell: reset_companion_position")
 }
 
-/// The companion's task-label field gained (true) or lost (false) focus. On macOS
-/// the panel may become key only while this is true, so ordinary button clicks
-/// never take keyboard focus from the frontmost app.
+/// Opens (creating on demand, `settings.html#<tab>`) and activates the settings
+/// window; if it already exists, emits `focus://open-tab` to it.
 #[tauri::command]
-pub fn set_text_input_active(app: AppHandle, active: bool) {
-    let _ = (app, active);
-    todo!("shell: set_text_input_active")
+pub fn open_settings(app: AppHandle, tab: Option<SettingsTab>) {
+    let _ = (app, tab);
+    todo!("shell: open_settings")
 }
 
 #[tauri::command]

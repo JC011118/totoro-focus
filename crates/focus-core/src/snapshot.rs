@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clock::Wall;
 use crate::history::{SessionRecord, TodaySummary};
-use crate::rewards::{AwardOutcome, UnlockDef};
+use crate::rewards::{AwardOutcome, Rules, UnlockDef};
 use crate::settings::Settings;
 use crate::timer::{PauseReason, RunStatus, SessionKind};
 
@@ -30,6 +30,8 @@ pub struct SessionView {
     pub planned_ms: u64,
     pub active_ms: u64,
     pub remaining_ms: u64,
+    /// `format_countdown(remaining_ms)`; the tray title and the widget both show this.
+    pub remaining_label: String,
     pub started_at: Wall,
 }
 
@@ -65,7 +67,6 @@ pub struct FriendshipView {
     /// Unlocked ids in table order (unknown ids from older tables are appended).
     pub unlocked: Vec<String>,
     pub next: Option<NextUnlock>,
-    pub unlocks: Vec<UnlockDef>,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -83,7 +84,10 @@ pub struct Limits {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
-    /// Increments on every engine change; the renderer may ignore older revisions.
+    /// Strictly increasing per emitted/returned snapshot (stamped by the shell under the
+    /// engine lock). The renderer applies a snapshot iff `seq > lastSeq`.
+    pub seq: u64,
+    /// Bumped when observable state changes (not on pure time passage). SPEC §4.9.
     pub revision: u64,
     pub phase: Phase,
     pub session: Option<SessionView>,
@@ -91,7 +95,8 @@ pub struct Snapshot {
     pub today: TodaySummary,
     pub friendship: FriendshipView,
     pub settings: Settings,
-    pub limits: Limits,
+    /// Whether the companion window is currently shown (stamped by the shell).
+    pub companion_visible: bool,
 }
 
 /// Static facts about the running app (`get_app_info`).
@@ -108,4 +113,56 @@ pub struct AppInfo {
     /// `panel` (non-activating NSPanel), `native` (plain window), or `other` (non-macOS).
     pub window_mode: String,
     pub debug: bool,
+    /// Why the saved hotkey could not be registered, if it couldn't.
+    pub hotkey_error: Option<String>,
+    pub limits: Limits,
+    pub rules: Rules,
+    /// The full unlock table, in order (static; not repeated in every snapshot).
+    pub unlocks: Vec<UnlockDef>,
+}
+
+/// `mm:ss` countdown, ceil to the second, no hour wrap (SPEC §3).
+pub fn format_countdown(remaining_ms: u64) -> String {
+    let s = remaining_ms.div_ceil(1000);
+    format!("{:02}:{:02}", s / 60, s % 60)
+}
+
+/// Whole minutes as "1 h 05 min" / "25 min" / "0 min" (SPEC §6).
+pub fn format_focus_label(ms: u64) -> String {
+    let minutes = ms / 60_000;
+    let (h, m) = (minutes / 60, minutes % 60);
+    if h > 0 {
+        format!("{h} h {m:02} min")
+    } else {
+        format!("{m} min")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn countdown_format_matches_spec_examples() {
+        for (ms, want) in [
+            (1_500_000, "25:00"),
+            (1_499_001, "25:00"),
+            (1_499_000, "24:59"),
+            (999, "00:01"),
+            (0, "00:00"),
+            (300_000, "05:00"),
+            (10_800_000, "180:00"),
+        ] {
+            assert_eq!(format_countdown(ms), want, "{ms}");
+        }
+    }
+
+    #[test]
+    fn focus_label_format() {
+        assert_eq!(format_focus_label(0), "0 min");
+        assert_eq!(format_focus_label(59_999), "0 min");
+        assert_eq!(format_focus_label(25 * 60_000), "25 min");
+        assert_eq!(format_focus_label(65 * 60_000 + 59_000), "1 h 05 min");
+        assert_eq!(format_focus_label(600 * 60_000), "10 h 00 min");
+    }
 }

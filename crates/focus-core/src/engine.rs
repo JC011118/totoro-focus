@@ -1,7 +1,9 @@
 //! The engine: one authoritative state machine for sessions, rewards and
 //! history. It performs no I/O. Every call takes `Now`; results are `Effect`s
 //! the app shell applies (save, emit, sound, show/hide, hotkey, App Nap).
-//! See docs/SPEC.md §4 for the exact rules this implements.
+//! See docs/SPEC.md §4 for the exact rules this implements — in particular the
+//! call pipeline (§4.0), `observe` (§4.5), Engine::new steps (§4.7) and effect
+//! ordering (§4.9).
 
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +77,18 @@ pub enum SystemEvent {
     ClockChanged,
 }
 
+/// What the shell should hold to keep the ticker honest (SPEC §4.8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ActivityLevel {
+    /// No session running: release any activity.
+    #[default]
+    None,
+    /// A break is running: prevent App Nap, allow idle system sleep.
+    Break,
+    /// A focus session is running: prevent App Nap and idle system sleep.
+    Focus,
+}
+
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -131,9 +145,12 @@ pub enum Transition {
     },
 }
 
+/// Effects, in the order they appear within one call (SPEC §4.9):
+/// Persist, SettingsChanged, Show/HideCompanion, ActivityChanged, Transition, PlaySound.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
-    /// Save `engine.persisted_state(now)` atomically, then call `engine.mark_persisted(now)`.
+    /// Save `engine.persisted_state(now)` atomically using the SAME `now` passed to
+    /// the call that returned it; after success call `engine.mark_persisted(now)`.
     Persist,
     Transition(Transition),
     PlaySound(SoundCue),
@@ -144,8 +161,8 @@ pub enum Effect {
         previous: Box<Settings>,
         current: Box<Settings>,
     },
-    /// Hold (true) or release (false) the App Nap activity assertion.
-    ActivityChanged { running: bool },
+    /// Change the NSProcessInfo activity (emitted only when the level changes).
+    ActivityChanged { level: ActivityLevel },
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -156,16 +173,18 @@ pub enum CommandError {
     SessionActive,
     #[error("there is no session in progress")]
     NoSession,
-    #[error("the session is not running")]
-    NotRunning,
-    #[error("the session is not paused")]
-    NotPaused,
     #[error("nothing is waiting for a choice")]
     NotAwaitingChoice,
     #[error("duration must be between {min} and {max} minutes")]
     InvalidMinutes { min: u32, max: u32 },
     #[error("invalid settings: {reason}")]
     InvalidSettings { reason: String },
+    #[error("animations can't be replayed during an active focus session")]
+    FocusRunning,
+    #[error("{id} is not unlocked yet")]
+    NotUnlocked { id: String },
+    #[error("character pack {id} is unavailable: {reason}")]
+    PackUnavailable { id: String, reason: String },
 }
 
 /// What the companion offers after a session ends.
@@ -192,8 +211,12 @@ pub struct Engine {
     friendship: Friendship,
     active: Option<ActiveSession>,
     awaiting: Option<AwaitingChoice>,
-    /// Last observation (SPEC §4.5). Cleared on suspend/wake.
+    /// Last observation (SPEC §4.5). Cleared on suspend.
     baseline: Option<Now>,
+    /// Between Suspend and Wake (SPEC §4.5).
+    suspended: bool,
+    /// Last emitted activity level (SPEC §4.8).
+    activity: ActivityLevel,
     /// Monotonic time of the last successful persist.
     last_persist: Option<Mono>,
     /// The companion was hidden because of `hide_during_focus`.
@@ -213,10 +236,11 @@ impl std::fmt::Debug for Engine {
 }
 
 impl Engine {
-    /// Build from loaded state. Sanitizes settings, reconciles friendship,
-    /// restores any checkpoint as a PAUSED session (SPEC §4.7) and immediately
-    /// applies pause expiry (§4.6). Returns startup effects (e.g. `Transition::Restored`,
-    /// `Persist` if anything was repaired or expired, `ShowCompanion`).
+    /// Build from loaded state following SPEC §4.7 "Engine::new steps": sanitize,
+    /// reconcile, dedupe history, validate/drop the checkpoint, restore PAUSED (or
+    /// silently complete a fully-served focus checkpoint), expire if due. Effects:
+    /// `Persist` if anything changed, `Transition::Restored` iff a session remains.
+    /// Never ShowCompanion or ActivityChanged.
     pub fn new(cfg: EngineConfig, table: UnlockTable, state: PersistedState, now: Now, ids: IdSource) -> (Self, Vec<Effect>) {
         let _ = (cfg, table, state, now, ids);
         todo!("engine: new")
@@ -232,13 +256,16 @@ impl Engine {
         todo!("engine: system")
     }
 
-    /// Full view model at `now`. `clock` supplies local offsets for the today summary.
+    /// Full view model at `now` (pure; folds a running session at
+    /// `min(now.mono, baseline.mono)`). `clock` supplies local offsets for the today
+    /// summary. `seq` is 0 and `companion_visible` false: the shell stamps both.
     pub fn snapshot(&self, now: Now, clock: &dyn Clock) -> Snapshot {
         let _ = (now, clock);
         todo!("engine: snapshot")
     }
 
-    /// Everything to persist at `now`, with the active session folded into a checkpoint.
+    /// Everything to persist at `now` (pure), with the active session folded into a
+    /// checkpoint at `min(now.mono, baseline.mono)` and `checkpointAt = now.wall`.
     pub fn persisted_state(&self, now: Now) -> PersistedState {
         let _ = now;
         todo!("engine: persisted_state")
@@ -249,11 +276,37 @@ impl Engine {
         self.last_persist = Some(now.mono);
     }
 
-    /// Milliseconds until the next useful tick: the next whole-second boundary of the
-    /// remaining time while running (clamped to 50..=1000), otherwise 1000.
-    pub fn next_tick_delay_ms(&self, now: Now) -> u64 {
-        let _ = now;
+    /// Milliseconds until the next useful tick (SPEC §8.2 Ticker): running → the next
+    /// whole-second boundary of remaining time (`remaining % 1000`, or 1000 when 0),
+    /// clamped to 50..=1000 (matches the ceil countdown format); paused → 15_000;
+    /// idle/awaiting → ms until the next local midnight + 50, capped at 60_000.
+    pub fn next_tick_delay_ms(&self, now: Now, clock: &dyn Clock) -> u64 {
+        let _ = (now, clock);
         todo!("engine: next_tick_delay_ms")
+    }
+
+    /// Validate a replay request (SPEC §10): `FocusRunning` while a focus session is
+    /// running; `key` must be `react` or an unlocked id of kind animation|idleVariant
+    /// (else `NotUnlocked`).
+    pub fn check_replay(&self, key: &str) -> Result<(), CommandError> {
+        let _ = key;
+        todo!("engine: check_replay")
+    }
+
+    /// A user show/hide of the companion clears the hide-during-focus flag (SPEC §4.10).
+    pub fn clear_hidden_for_focus(&mut self) {
+        self.hidden_for_focus = false;
+    }
+
+    /// Static limits (for `get_app_info`).
+    pub fn limits(&self) -> crate::snapshot::Limits {
+        crate::snapshot::Limits {
+            presets: self.cfg.presets.clone(),
+            min_minutes: self.cfg.min_minutes,
+            max_minutes: self.cfg.max_minutes,
+            break_minutes: self.cfg.break_minutes,
+            max_task_label_chars: self.cfg.max_task_label_chars,
+        }
     }
 
     pub fn phase(&self) -> Phase {

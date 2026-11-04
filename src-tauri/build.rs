@@ -1,4 +1,6 @@
 fn main() {
+    // include_dir! does not track files on stable; rebuild when placeholder art changes.
+    println!("cargo:rerun-if-changed=../packs/placeholder");
     // App commands get generated `allow-<command>` permissions so each window's
     // capability can allow exactly what it uses (minimal IPC surface).
     let commands: &[&str] = &[
@@ -19,7 +21,8 @@ fn main() {
         "show_companion",
         "hide_companion",
         "open_settings",
-        "set_text_input_active",
+        "set_hotkey_capture",
+        "reset_companion_position",
         "get_app_info",
         "quit_app",
     ];

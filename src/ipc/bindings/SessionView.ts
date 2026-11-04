@@ -3,4 +3,8 @@ import type { PauseReason } from "./PauseReason";
 import type { RunStatus } from "./RunStatus";
 import type { SessionKind } from "./SessionKind";
 
-export type SessionView = { id: string, kind: SessionKind, status: RunStatus, pauseReason: PauseReason | null, taskLabel: string | null, plannedMs: number, activeMs: number, remainingMs: number, startedAt: string, };
+export type SessionView = { id: string, kind: SessionKind, status: RunStatus, pauseReason: PauseReason | null, taskLabel: string | null, plannedMs: number, activeMs: number, remainingMs: number, 
+/**
+ * `format_countdown(remaining_ms)`; the tray title and the widget both show this.
+ */
+remainingLabel: string, startedAt: string, };

@@ -12,4 +12,4 @@ sourceKey: string,
 /**
  * Absolute URL of the sheet, e.g. `pack://localhost/placeholder/idle.svg`.
  */
-url: string, frameWidth: number, frameHeight: number, frames: number, fps: number, loop: boolean, row: number, column: number, sheetColumns: number, sheetRows: number, };
+url: string, frameWidth: number, frameHeight: number, frames: number, fps: number, loop: boolean, row: number, column: number, sheetColumns: number, sheetRows: number, stillFrame: number, frameDurationsMs: Array<number> | null, };

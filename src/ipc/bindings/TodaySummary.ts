@@ -15,6 +15,11 @@ focusMs: number,
  */
 activeFocusMs: number, completed: number, interrupted: number, 
 /**
- * One item per recorded focus session today, in end order (uncapped; the UI caps at 12).
+ * One item per recorded focus session today, in history insertion order
+ * (uncapped; the UI shows the first 12 then `+N`).
  */
-harvest: Array<HarvestItem>, };
+harvest: Array<HarvestItem>, 
+/**
+ * `format_focus_label(focus_ms + active_focus_ms)`, e.g. "1 h 05 min". Used by tray and UI.
+ */
+focusLabel: string, };

@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "companion",
   "description": "The floating companion widget: render state and send timer commands.",
-  "windows": ["companion"],
+  "windows": [
+    "companion"
+  ],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
@@ -17,7 +19,7 @@
     "allow-get-active-pack",
     "allow-hide-companion",
     "allow-open-settings",
-    "allow-set-text-input-active",
-    "allow-get-app-info"
+    "allow-get-app-info",
+    "allow-replay-animation"
   ]
 }

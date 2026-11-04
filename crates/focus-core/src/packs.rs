@@ -10,10 +10,14 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub use crate::palette::PaletteSpec;
+use crate::rewards::UnlockTable;
+
 pub const PACK_FORMAT: u32 = 1;
 pub const PLACEHOLDER_ID: &str = "placeholder";
 /// States every pack should provide; each falls back to `idle`, then to the
-/// renderer's built-in static companion.
+/// renderer's built-in static companion. Built-in chain: focus/paused/break/completed → idle;
+/// `react`, `blink` and every unlock id → none.
 pub const BASE_STATES: [&str; 5] = ["idle", "focus", "paused", "completed", "break"];
 /// Optional extra states: `react` (click reaction), `blink` (idle/focus blink overlay).
 pub const EXTRA_STATES: [&str; 2] = ["react", "blink"];
@@ -51,38 +55,16 @@ pub struct AnimationSpec {
     /// Defaults to `row + 1`.
     #[serde(default)]
     pub sheet_rows: Option<u32>,
+    /// Frame shown under reduced motion (default 0).
+    #[serde(default)]
+    pub still_frame: Option<u32>,
+    /// Per-frame durations; when present (length == frames) they override `fps`.
+    #[serde(default)]
+    pub frame_durations_ms: Option<Vec<u32>>,
 }
 
 fn default_true() -> bool {
     true
-}
-
-/// Palette overrides. Colors must be `#rgb`, `#rrggbb`, `#rrggbbaa`, or
-/// `rgb()/rgba()/hsl()/hsla()` with numeric arguments; `characterFilter` may only
-/// use `brightness|contrast|saturate|sepia|hue-rotate|grayscale` with numeric
-/// (deg/%) arguments. Invalid values are dropped with a warning.
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
-#[serde(rename_all = "camelCase", default)]
-pub struct PaletteSpec {
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub label: Option<String>,
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub background: Option<String>,
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub surface: Option<String>,
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub text: Option<String>,
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub muted: Option<String>,
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub accent: Option<String>,
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub ring: Option<String>,
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub ring_track: Option<String>,
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub character_filter: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -162,6 +144,8 @@ pub struct ResolvedAnimation {
     pub column: u32,
     pub sheet_columns: u32,
     pub sheet_rows: u32,
+    pub still_frame: u32,
+    pub frame_durations_ms: Option<Vec<u32>>,
 }
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -207,11 +191,19 @@ pub fn validate_manifest(m: &PackManifest, file_exists: &dyn Fn(&str) -> bool) -
 }
 
 /// Resolve `key` to `(source_key, spec)`: the pack's own animation, then the
-/// pack's `fallbacks` chain, then the built-in chain (states → `idle`; unlock
-/// animations → none). Cycles are cut. `None` when nothing applies.
+/// pack's `fallbacks` chain, then the built-in chain (focus/paused/break/completed
+/// → `idle`; `react`, `blink`, unlock ids → none). Cycles are cut. `None` when nothing applies.
 pub fn resolve<'a>(m: &'a PackManifest, key: &str) -> Option<(String, &'a AnimationSpec)> {
     let _ = (m, key);
     todo!("packs: resolve")
+}
+
+/// Keys the shell resolves for the renderer (SPEC §7 "Render keys"): BASE_STATES ∪
+/// EXTRA_STATES ∪ unlock ids of kind animation|idleVariant ∪ the pack's own animation
+/// keys. Deduplicated, stable order (that listing order).
+pub fn render_keys(table: &UnlockTable, m: &PackManifest) -> Vec<String> {
+    let _ = (table, m);
+    todo!("packs: render_keys")
 }
 
 /// Normalize a pack-relative path. Rejects empty, absolute, drive-prefixed,
@@ -247,6 +239,7 @@ impl PackRegistry {
     /// then every `<user_dir>/<subdir>/pack.json`, then (when given) every
     /// `<dev_dir>/<subdir>/pack.json`; dev overrides user on id collision; packs
     /// claiming the `placeholder` id from disk are rejected with an error entry.
+    /// A subdir with `pet.json` and no `pack.json` is converted as a Petdex pack (SPEC §7.2).
     /// Never panics on bad input; problems become `PackInfo.errors`.
     pub fn load(bundled: BundledPack, user_dir: Option<&Path>, dev_dir: Option<&Path>) -> Self {
         let _ = (bundled, user_dir, dev_dir);
@@ -264,11 +257,12 @@ impl PackRegistry {
     }
 
     /// Resolve `id` for rendering (falling back to the placeholder if `id` is
-    /// unknown or invalid, recording `fallback_from`). `keys` are the animation
-    /// keys to resolve; `url_prefix` is e.g. `pack://localhost/` and URLs are
+    /// unknown or invalid, recording `fallback_from`). Resolves exactly
+    /// `render_keys(table, manifest)`; `url_prefix` is e.g. `pack://localhost/` and URLs are
     /// `{url_prefix}{packId}/{sheet}` with each path segment percent-encoded.
-    pub fn resolve_pack(&self, id: &str, keys: &[&str], url_prefix: &str) -> ResolvedPack {
-        let _ = (id, keys, url_prefix);
+    /// Use `render_keys(table, manifest)` for `keys` (the shell does).
+    pub fn resolve_pack(&self, id: &str, table: &UnlockTable, url_prefix: &str) -> ResolvedPack {
+        let _ = (id, table, url_prefix);
         todo!("packs: resolve_pack")
     }
 
