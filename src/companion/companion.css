@@ -115,9 +115,11 @@
   stroke: var(--c-ring);
 }
 
+/* Only for very short sessions (see ringNeedsEasing): a brief ease so the
+   ring never animates continuously. */
 .ring__arc--animate {
   transition:
-    stroke-dashoffset 1s linear,
+    stroke-dashoffset 0.35s ease-out,
     stroke 0.3s ease;
 }
 

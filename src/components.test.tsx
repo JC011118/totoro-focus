@@ -5,7 +5,18 @@ import { StaticCompanion } from "./character/StaticCompanion";
 import { HarvestRow } from "./harvest/HarvestRow";
 import type { HarvestItem } from "./ipc/bindings/HarvestItem";
 import { anim, makePack, session } from "./test/fixtures";
-import { ringFraction, TimerView } from "./timer/TimerView";
+import { ringFraction, ringNeedsEasing, TimerView } from "./timer/TimerView";
+
+describe("ringNeedsEasing", () => {
+  it("eases only when a one-second step is at least 1 px of arc", () => {
+    const s = (plannedMs: number) => session({ plannedMs, remainingMs: plannedMs });
+    expect(ringNeedsEasing(s(60_000), 100, 6)).toBe(true); // 1 min: ~4.9 px per second
+    expect(ringNeedsEasing(s(25 * 60_000), 100, 6)).toBe(false); // 25 min: ~0.2 px
+    expect(ringNeedsEasing(s(5 * 60_000), 100, 6)).toBe(false); // 5-min break: <1 px
+    expect(ringNeedsEasing(null, 100, 6)).toBe(false);
+    expect(ringNeedsEasing(s(0), 100, 6)).toBe(false);
+  });
+});
 
 describe("TimerView", () => {
   it("shows the backend's remainingLabel verbatim and never computes time", () => {
@@ -26,7 +37,12 @@ describe("TimerView", () => {
     );
     const arc = container.querySelector(".ring__arc");
     expect(arc?.getAttribute("data-fraction")).toBe("0.25");
-    expect(arc?.classList.contains("ring__arc--animate")).toBe(true);
+    expect(arc?.classList.contains("ring__arc--animate")).toBe(true); // a very short session: visible steps
+    rerender(
+      <TimerView phase="focus" session={session({ plannedMs: 1_500_000, remainingMs: 750_000 })} size={100} reducedMotion={false} />,
+    );
+    // 25 min: each second moves the arc far below 1 px, so no continuous transition (idle CPU).
+    expect(container.querySelector(".ring__arc")?.classList.contains("ring__arc--animate")).toBe(false);
     rerender(<TimerView phase="focus" session={session({ plannedMs: 1000, remainingMs: 250 })} size={100} reducedMotion />);
     expect(container.querySelector(".ring__arc")?.classList.contains("ring__arc--animate")).toBe(false);
     rerender(<TimerView phase="idle" session={null} size={100} reducedMotion={false} heading={<span>Ready</span>} />);

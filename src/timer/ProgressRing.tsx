@@ -8,7 +8,7 @@ export interface ProgressRingProps {
   size: number;
   stroke: number;
   tone: RingTone;
-  /** A 1 s linear transition between snapshots; off under reduced motion. */
+  /** A brief ease between snapshots (short sessions only; off under reduced motion). */
   animate: boolean;
   children?: ReactNode;
 }

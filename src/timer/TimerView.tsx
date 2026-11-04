@@ -13,6 +13,20 @@ export function ringFraction(session: SessionView | null): number {
   return Math.min(1, Math.max(0, session.remainingMs / session.plannedMs));
 }
 
+/**
+ * Whether the ring should ease between one-second snapshots. Easing a ring that
+ * changes every second keeps WebKit repainting for the whole session, which an
+ * all-day companion must not do; it is only worth it when a one-second step is
+ * visible (at least 1 px of arc, i.e. very short sessions). Breaks and focus
+ * sessions of normal length step without a transition, invisibly.
+ */
+export function ringNeedsEasing(session: SessionView | null, size: number, stroke: number): boolean {
+  if (!session || session.plannedMs <= 0) return false;
+  const circumference = Math.PI * Math.max(0, size - stroke);
+  const stepPx = circumference / (session.plannedMs / 1000);
+  return stepPx >= 1;
+}
+
 export function ringTone(phase: Phase, session: SessionView | null, awaitingAfterFocus: boolean): RingTone {
   if (session?.status === "paused") return "paused";
   if (phase === "break") return "break";
@@ -62,7 +76,7 @@ export function TimerView({
   const fraction = session ? ringFraction(session) : awaitingAfterFocus ? 1 : 0;
   return (
     <div className={`timer-view timer-view--${tone}`}>
-      <ProgressRing fraction={fraction} size={size} stroke={stroke} tone={tone} animate={!reducedMotion}>
+      <ProgressRing fraction={fraction} size={size} stroke={stroke} tone={tone} animate={!reducedMotion && ringNeedsEasing(session, size, stroke)}>
         {children}
       </ProgressRing>
       <div className="timer-view__aside">

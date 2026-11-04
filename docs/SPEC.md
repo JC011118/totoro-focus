@@ -493,6 +493,12 @@ Flourish eligibility uses the unlocks as of the transition. The award in a
 `focusCompleted` transition counts, even if the snapshot that carries it
 arrives later.
 
+**Progress ring.** The ring is redrawn from each snapshot and has no
+continuous animation. It eases briefly (0.35 s) between snapshots only when a
+one-second step is visible, meaning at least 1 px of arc (very short sessions).
+A ring that eased every second would keep WebKit repainting for the whole
+session. For an all-day companion that is the dominant idle and running cost.
+
 **Reduced motion** is `settings.reducedMotion || prefers-reduced-motion`. Under
 it the companion shows the base key's `stillFrame`, with no flourishes, blink,
 hop or ring transition. A click, or a replay (`focus://play`), shows a static
