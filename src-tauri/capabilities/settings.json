@@ -1,0 +1,28 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "The settings window: settings, history, companion menu, packs.",
+  "windows": ["settings"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "allow-get-snapshot",
+    "allow-start-focus",
+    "allow-start-break",
+    "allow-pause",
+    "allow-resume",
+    "allow-end-session",
+    "allow-dismiss",
+    "allow-update-settings",
+    "allow-set-hotkey",
+    "allow-get-history",
+    "allow-list-packs",
+    "allow-get-active-pack",
+    "allow-set-active-pack",
+    "allow-replay-animation",
+    "allow-show-companion",
+    "allow-hide-companion",
+    "allow-get-app-info",
+    "allow-quit-app"
+  ]
+}

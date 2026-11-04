@@ -1,0 +1,29 @@
+{
+  "format": 1,
+  "rules": {
+    "pointsPerActiveMinute": 1,
+    "completionBonus": 5,
+    "longSessionMinutes": 45
+  },
+  "unlocks": [
+    { "id": "base", "points": 0, "kind": "states", "trigger": "always", "label": "Old friends", "description": "Idle, focus, paused, completed and break." },
+    { "id": "wave", "points": 25, "kind": "animation", "trigger": "focusStart", "label": "A small wave", "description": "Your companion waves as a session begins." },
+    { "id": "stretch", "points": 60, "kind": "animation", "trigger": "breakStart", "label": "Big stretch", "description": "A long stretch when a break starts." },
+    { "id": "umbrella", "points": 100, "kind": "idleVariant", "trigger": "rainyIdle", "label": "Rainy day", "description": "On some quiet days, a leaf umbrella comes out." },
+    { "id": "evening", "points": 160, "kind": "palette", "trigger": "afterSunset", "label": "Evening light", "description": "Warmer, dimmer colors after sunset." },
+    { "id": "sleepy", "points": 240, "kind": "idleVariant", "trigger": "lateNight", "label": "Sleepy", "description": "Dozes off late at night while you're idle." },
+    { "id": "celebrate", "points": 350, "kind": "animation", "trigger": "focusComplete", "label": "Little celebration", "description": "A special happy hop when a session completes." },
+    { "id": "acorn_gift", "points": 500, "kind": "animation", "trigger": "harvest", "label": "Acorn gift", "description": "Hands you the harvest acorn." },
+    { "id": "autumn", "points": 700, "kind": "palette", "trigger": "autumnSeason", "label": "Autumn leaves", "description": "Russet colors through the autumn months." },
+    { "id": "long_session", "points": 1000, "kind": "animation", "trigger": "longSessionComplete", "label": "Long haul", "description": "A proud reaction after sessions of 45 minutes or more." },
+    { "id": "dawn", "points": 1450, "kind": "palette", "trigger": "earlyMorning", "label": "Dawn", "description": "Pale morning colors early in the day." },
+    { "id": "firefly", "points": 2100, "kind": "idleVariant", "trigger": "summerEvening", "label": "Fireflies", "description": "Fireflies drift by on summer evenings." },
+    { "id": "snow", "points": 3050, "kind": "palette", "trigger": "winterSeason", "label": "First snow", "description": "Quiet winter colors." },
+    { "id": "hum", "points": 4400, "kind": "animation", "trigger": "breakEnd", "label": "A little tune", "description": "Hums softly when a break ends." },
+    { "id": "moss", "points": 6400, "kind": "palette", "trigger": "manual", "label": "Deep moss", "description": "A deep green palette you can pick any time." },
+    { "id": "lantern", "points": 9300, "kind": "idleVariant", "trigger": "evening", "label": "Lantern", "description": "Lights a small lantern in the evening." },
+    { "id": "bloom", "points": 13500, "kind": "palette", "trigger": "springSeason", "label": "Spring bloom", "description": "Soft blossom colors in spring." },
+    { "id": "stargaze", "points": 19500, "kind": "idleVariant", "trigger": "lateNightClear", "label": "Stargazing", "description": "Looks up at the stars on clear late nights." },
+    { "id": "old_friends", "points": 28300, "kind": "palette", "trigger": "manual", "label": "Golden hour", "description": "A warm golden palette for old friends." }
+  ]
+}

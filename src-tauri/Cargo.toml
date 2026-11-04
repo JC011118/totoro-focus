@@ -1,0 +1,34 @@
+[package]
+name = "focus-companion"
+description = "Offline macOS focus timer with a quiet desktop companion (app shell)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+default-run = "focus-companion"
+
+[lib]
+name = "focus_companion_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.7.4", features = [] }
+
+[dependencies]
+focus-core = { path = "../crates/focus-core" }
+tauri = { version = "=2.12.5", features = ["tray-icon", "macos-private-api", "image-png"] }
+tauri-plugin-global-shortcut = "=2.4.1"
+tauri-plugin-single-instance = "=2.5.5"
+tauri-plugin-log = "=2.10.1"
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+log.workspace = true
+include_dir = "0.7.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri-nspanel = "=2.1.1"
+objc2 = "0.6.5"
+block2 = "0.6.2"
+objc2-foundation = { version = "0.3.2", features = ["NSNotification", "NSString", "NSProcessInfo", "NSData", "NSOperation", "NSObject", "block2"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSWorkspace", "NSSound", "NSApplication", "NSResponder", "NSRunningApplication"] }

@@ -1,0 +1,23 @@
+[package]
+name = "focus-core"
+description = "Pure, clock-injected timer, rewards, persistence and pack logic for the focus companion."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+log.workspace = true
+uuid = { version = "1.29", features = ["v4"] }
+ts-rs = { version = "12.0.1", optional = true, features = ["chrono-impl", "no-serde-warnings"] }
+
+[features]
+# Enables TypeScript binding export (`npm run bindings`).
+ts = ["dep:ts-rs"]
+
+[dev-dependencies]
+tempfile = "3.27"
