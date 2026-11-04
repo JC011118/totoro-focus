@@ -77,6 +77,90 @@ describe("CompanionApp", () => {
     expect(screen.queryByText("Custom")).toBeNull();
   });
 
+  describe("a stale custom stepper never hides the completion choices", () => {
+    const completed = (seq: number) =>
+      makeSnapshot({
+        seq,
+        phase: "awaitingChoice",
+        awaiting: {
+          after: "focus",
+          record: {
+            id: "s2",
+            kind: "focus",
+            startedAt: "2026-11-04T09:00:00Z",
+            endedAt: "2026-11-04T09:25:00Z",
+            plannedMs: 1_500_000,
+            activeMs: 1_500_000,
+            outcome: "completed",
+            endReason: "completed",
+          },
+          award: { sessionId: "s2", points: 25, bonus: 5, totalPoints: 30, newlyUnlocked: [] },
+          longSession: false,
+        },
+      });
+    const runningSnap = (seq: number) => makeSnapshot({ seq, phase: "focus", session: session({ id: "s2" }) });
+    const expectCompletionChoices = () => {
+      expect(screen.queryByText("Custom")).toBeNull();
+      expect(screen.getByText("25 min together")).toBeTruthy();
+      expect(button("5-min break")).toBeTruthy();
+      expect(button("Another 25")).toBeTruthy();
+      expect(button("Done")).toBeTruthy();
+    };
+
+    it("tray Custom duration…, then a session started elsewhere, then completion (review scenario)", async () => {
+      const { backend } = await mount(makeSnapshot());
+      act(() => backend.emit("openPicker", null));
+      expect(screen.getByText("Custom")).toBeTruthy();
+      // Started from the tray or the hotkey: only the snapshot reaches the renderer here.
+      act(() => backend.emit("snapshot", runningSnap(2)));
+      expect(screen.queryByText("Custom")).toBeNull();
+      act(() => backend.emit("snapshot", completed(3)));
+      expectCompletionChoices();
+    });
+
+    it("a start transition closes the stepper even if no running snapshot was rendered", async () => {
+      const { backend } = await mount(makeSnapshot());
+      act(() => backend.emit("openPicker", null));
+      expect(screen.getByText("Custom")).toBeTruthy();
+      act(() => {
+        backend.emit("transition", { type: "focusStarted", sessionId: "s2", plannedMs: 1_500_000 });
+        backend.emit("snapshot", runningSnap(2));
+        backend.emit("snapshot", completed(3));
+      });
+      expectCompletionChoices();
+    });
+
+    it("a break started elsewhere closes it too", async () => {
+      const { backend } = await mount(completed(1));
+      act(() => backend.emit("openPicker", null));
+      expect(screen.getByText("Custom")).toBeTruthy(); // a custom length is a valid choice after a session
+      act(() => backend.emit("transition", { type: "breakStarted", sessionId: "b1", plannedMs: 300_000 }));
+      expect(screen.queryByText("Custom")).toBeNull();
+    });
+
+    it("focus://open-picker during a session is ignored", async () => {
+      const { backend } = await mount(runningSnap(1));
+      act(() => backend.emit("openPicker", null));
+      act(() => backend.emit("snapshot", completed(2)));
+      expectCompletionChoices();
+    });
+
+    it("the stepper's own start still closes it, and Back returns to the completion choices", async () => {
+      const { backend } = await mount(completed(1));
+      act(() => backend.emit("openPicker", null));
+      fireEvent.click(button("Back"));
+      expectCompletionChoices();
+      act(() => backend.emit("openPicker", null));
+      backend.startFocus.mockResolvedValueOnce(runningSnap(2));
+      fireEvent.click(button("Start 25"));
+      await act(flush);
+      expect(backend.startFocus).toHaveBeenCalledWith({ minutes: 25 });
+      expect(screen.queryByText("Custom")).toBeNull();
+      act(() => backend.emit("snapshot", completed(3)));
+      expectCompletionChoices();
+    });
+  });
+
   it("running: shows remainingLabel and sends pause / end", async () => {
     const running = makeSnapshot({ phase: "focus", session: session({ taskLabel: "Review one lecture" }) });
     const { backend } = await mount(running);

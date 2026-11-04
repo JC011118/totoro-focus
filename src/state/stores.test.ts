@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Backend, Unlisten } from "../ipc/backend";
 import type { Snapshot } from "../ipc/bindings/Snapshot";
-import { FakeBackend, flush, makePack, makeSnapshot } from "../test/fixtures";
+import { APP_INFO, FakeBackend, flush, makePack, makeSnapshot } from "../test/fixtures";
 import { AppInfoStore, PackStore, shouldApply, SnapshotStore } from "./stores";
 
 const snap = (seq: number, extra: Partial<Snapshot> = {}) => makeSnapshot({ seq, ...extra });
@@ -125,6 +125,26 @@ describe("AppInfoStore", () => {
     stop();
     store.connect()();
     expect(backend.getAppInfo).toHaveBeenCalledTimes(1);
+  });
+
+  it("refresh() refetches (hotkeyError changes after set_hotkey) and keeps the value on failure", async () => {
+    const backend = new FakeBackend();
+    backend.getAppInfo.mockResolvedValueOnce({ ...APP_INFO, hotkeyError: "taken" });
+    const store = new AppInfoStore(backend);
+    const stop = store.connect();
+    await flush();
+    expect(store.get()?.hotkeyError).toBe("taken");
+    const changes = vi.fn();
+    store.subscribe(changes);
+    await store.refresh();
+    expect(store.get()?.hotkeyError).toBeNull();
+    expect(changes).toHaveBeenCalledTimes(1);
+    const onError = vi.fn();
+    backend.getAppInfo.mockRejectedValueOnce(new Error("gone"));
+    await store.refresh(onError);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(store.get()?.hotkeyError).toBeNull();
+    stop();
   });
 
   it("does not call a command the window lacks after failing", async () => {

@@ -1,11 +1,16 @@
 // Records a global shortcut. While recording, the shell unregisters the live
 // binding (set_hotkey_capture), so pressing the current shortcut is recorded
 // instead of toggling the timer. Keys come from KeyboardEvent.code.
+//
+// `registrationError` is AppInfo.hotkeyError (the saved binding failed to
+// register at launch). The shell clears it once a binding registers, so after
+// every save or capture the recorder refetches app info, and a successful save
+// hides the old error at once rather than leaving it next to a working binding.
 
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { errorMessage } from "../ipc/errors";
 import { DEFAULT_HOTKEY, displayAccelerator, recordAccelerator } from "../format/hotkey";
-import { useBackend, useSnapshotCommand } from "../state/BackendContext";
+import { useBackend, useRuntime, useSnapshotCommand } from "../state/BackendContext";
 import { Button, Message } from "./ui";
 
 /** The shell restores the binding after 30 s of capture; stop recording at the same time. */
@@ -15,16 +20,21 @@ type Mode = { kind: "idle" } | { kind: "recording"; held: string } | { kind: "sa
 
 export function HotkeyRecorder({ hotkey, registrationError }: { hotkey: string | null; registrationError: string | null }) {
   const backend = useBackend();
+  const { appInfo } = useRuntime();
   const command = useSnapshotCommand();
   const [mode, setMode] = useState<Mode>({ kind: "idle" });
   const [error, setError] = useState<string | null>(null);
+  /** The registration error a successful save replaced (hidden until app info says otherwise). */
+  const [superseded, setSuperseded] = useState<string | null>(null);
   const capturing = useRef(false);
 
-  const releaseCapture = () => {
-    if (!capturing.current) return;
+  const releaseCapture = (): Promise<void> => {
+    if (!capturing.current) return Promise.resolve();
     capturing.current = false;
-    backend.setHotkeyCapture(false).catch(() => {});
+    return backend.setHotkeyCapture(false).catch(() => {});
   };
+  /** Ending a capture or a save re-registers a binding; ask the shell how that went. */
+  const refreshStatus = () => void appInfo.refresh();
 
   const start = async () => {
     setError(null);
@@ -38,7 +48,7 @@ export function HotkeyRecorder({ hotkey, registrationError }: { hotkey: string |
   };
 
   const cancel = () => {
-    releaseCapture();
+    void releaseCapture().then(refreshStatus);
     setMode({ kind: "idle" });
   };
 
@@ -47,11 +57,13 @@ export function HotkeyRecorder({ hotkey, registrationError }: { hotkey: string |
     setError(null);
     try {
       await command(backend.setHotkey(accelerator));
+      setSuperseded(registrationError);
     } catch (e) {
       setError(errorMessage(e));
     } finally {
-      releaseCapture();
+      const released = releaseCapture();
       setMode({ kind: "idle" });
+      void released.then(refreshStatus);
     }
   };
 
@@ -103,7 +115,7 @@ export function HotkeyRecorder({ hotkey, registrationError }: { hotkey: string |
   }, [recording]);
 
   // Never leave the shortcut unregistered if the tab goes away mid-recording.
-  const releaseOnUnmount = useEffectEvent(releaseCapture);
+  const releaseOnUnmount = useEffectEvent(() => void releaseCapture());
   useEffect(() => () => releaseOnUnmount(), []);
 
   const current = displayAccelerator(hotkey);
@@ -144,7 +156,7 @@ export function HotkeyRecorder({ hotkey, registrationError }: { hotkey: string |
         ) : null}
       </div>
       {error ? <Message tone="error">{error}</Message> : null}
-      {registrationError && !error ? (
+      {registrationError && registrationError !== superseded && !error ? (
         <Message tone="error">The saved shortcut couldn't be registered: {registrationError}</Message>
       ) : null}
     </div>

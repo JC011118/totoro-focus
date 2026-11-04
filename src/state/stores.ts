@@ -144,10 +144,22 @@ export class PackStore extends Emitter<ResolvedPack | null> {
   }
 }
 
-/** Static app facts; fetched once (retried until it succeeds). */
+/**
+ * App facts; fetched once (retried until it succeeds). Almost all of it is
+ * static; `hotkeyError` can change after set_hotkey or a hotkey capture, so
+ * the recorder calls `refresh()` then.
+ */
 export class AppInfoStore extends Emitter<AppInfo | null> {
   constructor(private backend: Backend) {
     super(null);
+  }
+
+  /** Refetch once; a failure keeps the current value. */
+  refresh(onError: (e: unknown) => void = logError("app info")): Promise<void> {
+    return this.backend.getAppInfo().then(
+      (info) => this.set(info),
+      (e: unknown) => onError(e),
+    );
   }
 
   connect(onError: (e: unknown) => void = logError("app info")): () => void {

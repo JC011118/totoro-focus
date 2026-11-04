@@ -9,6 +9,7 @@ import type { Snapshot } from "../ipc/bindings/Snapshot";
 import type { UnlockDef } from "../ipc/bindings/UnlockDef";
 import { errorMessage } from "../ipc/errors";
 import { useBackend, useRuntime, useSnapshotCommand } from "../state/BackendContext";
+import { useEffectiveReducedMotion } from "../state/useReducedMotion";
 import { autoPaletteId, effectivePalette, pickablePalettes, resolvesIn } from "../theme/choose";
 import { presentationTriggers, useLocalNow } from "../theme/localTime";
 import type { ResolvedPalette } from "../theme/palettes";
@@ -31,6 +32,13 @@ export function friendshipProgress(total: number, unlocks: readonly UnlockDef[],
 
 const fmt = (n: number) => n.toLocaleString();
 
+/** Under reduced motion replays never animate (SPEC §7.1); the companion only says hi. */
+export function replayMessage(label: string, reducedMotion: boolean): string {
+  return reducedMotion
+    ? `Reduced motion is on, so “${label}” stays still. The companion just says hi.`
+    : `Playing “${label}” on the companion.`;
+}
+
 export function CompanionTab({
   snapshot,
   appInfo,
@@ -47,6 +55,7 @@ export function CompanionTab({
   const unlocks = appInfo?.unlocks ?? [];
   const f = snapshot.friendship;
   const focusRunning = snapshot.phase === "focus" && snapshot.session?.status === "running";
+  const reducedMotion = useEffectiveReducedMotion(snapshot.settings.reducedMotion);
 
   const [packs, setPacks] = useState<PackInfo[] | null>(null);
   const [packError, setPackError] = useState<string | null>(null);
@@ -227,7 +236,7 @@ export function CompanionTab({
                       variant="quiet"
                       icon="play"
                       disabled={focusRunning}
-                      onClick={() => act(() => backend.replayAnimation(u.id), `Playing “${u.label}” on the companion.`)}
+                      onClick={() => act(() => backend.replayAnimation(u.id), replayMessage(u.label, reducedMotion))}
                     >
                       Replay
                     </Button>

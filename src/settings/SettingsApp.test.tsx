@@ -2,8 +2,8 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import type { SessionRecord } from "../ipc/bindings/SessionRecord";
 import { BackendProvider } from "../state/BackendContext";
-import { FakeBackend, flush, makeSnapshot } from "../test/fixtures";
-import { friendshipProgress } from "./CompanionTab";
+import { APP_INFO, FakeBackend, flush, makePack, makeSnapshot } from "../test/fixtures";
+import { friendshipProgress, replayMessage } from "./CompanionTab";
 import { SettingsApp } from "./SettingsApp";
 import { tabFromHash } from "./tabs";
 import { UNLOCKS } from "../test/fixtures";
@@ -106,6 +106,79 @@ describe("SettingsApp", () => {
     expect(screen.getByText("That shortcut is taken by another app.")).toBeTruthy();
   });
 
+  describe("hotkey registration error (AppInfo.hotkeyError)", () => {
+    const STARTUP_ERROR = "⌃⌥T is used by another app";
+    const shown = () => screen.queryByText(/The saved shortcut couldn't be registered/);
+    const withHotkey = (seq: number, hotkey: string | null) =>
+      makeSnapshot({ seq, settings: { ...makeSnapshot().settings, hotkey } });
+    const failingBackend = () => {
+      const backend = new FakeBackend();
+      // A shell that keeps reporting the startup error: the recorder must not rely on a refetch alone.
+      backend.getAppInfo.mockResolvedValue({ ...APP_INFO, hotkeyError: STARTUP_ERROR });
+      return backend;
+    };
+    const record = async (code: string, key: string) => {
+      fireEvent.click(screen.getByRole("button", { name: /Change…|Set…/ }));
+      await act(flush);
+      fireEvent.keyDown(window, { code, key, altKey: true, ctrlKey: true });
+      await act(flush);
+      await act(flush);
+    };
+
+    it("is cleared by recording a shortcut that set_hotkey accepts (review scenario)", async () => {
+      const backend = failingBackend();
+      await mount(backend, "#general");
+      expect(shown()?.textContent).toContain(STARTUP_ERROR);
+      backend.setHotkey.mockResolvedValueOnce(withHotkey(2, "Ctrl+Alt+K"));
+      await record("KeyK", "˚");
+      expect(backend.setHotkey).toHaveBeenCalledWith("Ctrl+Alt+K");
+      expect(screen.getByText("⌃⌥K")).toBeTruthy();
+      expect(shown()).toBeNull();
+      expect(backend.getAppInfo.mock.calls.length).toBeGreaterThan(1); // asked the shell again
+    });
+
+    it("is cleared by Disable shortcut", async () => {
+      const backend = failingBackend();
+      await mount(backend, "#general");
+      backend.setHotkey.mockResolvedValueOnce(withHotkey(2, null));
+      fireEvent.click(screen.getByRole("button", { name: "Disable shortcut" }));
+      await act(flush);
+      await act(flush);
+      expect(backend.setHotkey).toHaveBeenCalledWith(null);
+      expect(screen.getByText("Off")).toBeTruthy();
+      expect(shown()).toBeNull();
+    });
+
+    it("stays while set_hotkey fails, and follows the shell after a capture", async () => {
+      const backend = failingBackend();
+      await mount(backend, "#general");
+      backend.setHotkey.mockRejectedValueOnce({ code: "invalidSettings", reason: "that shortcut is taken by another app" });
+      await record("KeyJ", "∆");
+      expect(screen.getByText("That shortcut is taken by another app.")).toBeTruthy();
+      expect(shown()).toBeNull(); // the fresher error wins while it is shown
+
+      // Cancelling a capture re-registers the saved binding; the shell now reports it working.
+      backend.getAppInfo.mockResolvedValue({ ...APP_INFO, hotkeyError: null });
+      fireEvent.click(screen.getByRole("button", { name: "Change…" }));
+      await act(flush);
+      fireEvent.keyDown(window, { code: "Escape", key: "Escape" });
+      await act(flush);
+      await act(flush);
+      expect(backend.setHotkeyCapture).toHaveBeenLastCalledWith(false);
+      expect(shown()).toBeNull();
+      expect(screen.queryByText("That shortcut is taken by another app.")).toBeNull();
+    });
+
+    it("shows a new error the shell reports after a successful save", async () => {
+      const backend = failingBackend();
+      await mount(backend, "#general");
+      backend.setHotkey.mockResolvedValueOnce(withHotkey(2, "Ctrl+Alt+K"));
+      backend.getAppInfo.mockResolvedValue({ ...APP_INFO, hotkeyError: "⌃⌥K stopped working" });
+      await record("KeyK", "˚");
+      expect(shown()?.textContent).toContain("⌃⌥K stopped working");
+    });
+  });
+
   it("History refetches on mount and on focusCompleted / focusInterrupted only", async () => {
     const record: SessionRecord = {
       id: "s1",
@@ -143,6 +216,19 @@ describe("SettingsApp", () => {
     expect(backend.updateSettings).toHaveBeenCalledWith({ palette: "evening" });
     expect(screen.getAllByText("700 pts").length).toBeGreaterThan(0); // autumn, still locked
     expect(screen.getByText("/packs")).toBeTruthy();
+  });
+
+  it("gallery replays say what the companion will do under reduced motion", async () => {
+    const backend = new FakeBackend();
+    backend.pack = makePack(["idle", "wave"]);
+    const base = makeSnapshot({ friendship: { totalPoints: 30, unlocked: ["base", "wave"], next: null } });
+    backend.snapshot = { ...base, settings: { ...base.settings, reducedMotion: true } };
+    await mount(backend, "#companion");
+    fireEvent.click(screen.getByRole("button", { name: "Replay" }));
+    await act(flush);
+    expect(backend.replayAnimation).toHaveBeenCalledWith("wave");
+    expect(screen.getByText(/Reduced motion is on, so “A small wave” stays still/)).toBeTruthy();
+    expect(replayMessage("A small wave", false)).toBe("Playing “A small wave” on the companion.");
   });
 
   it("friendship progress runs from the last threshold to the next", () => {

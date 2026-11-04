@@ -41,9 +41,23 @@ function candidatesFor(t: Transition): string[][] {
 }
 
 /**
+ * Ids unlocked as of `t`. The shell emits a transition before the snapshot of
+ * the same call (SPEC §4.9), so the renderer's cached `friendship.unlocked`
+ * misses whatever this session's award just unlocked; the award lists it.
+ */
+export function unlockedAsOf(t: Transition, unlocked: readonly string[]): Set<string> {
+  const have = new Set(unlocked);
+  if (t.type === "focusCompleted" || t.type === "focusInterrupted") {
+    for (const id of t.award?.newlyUnlocked ?? []) have.add(id);
+  }
+  return have;
+}
+
+/**
  * The flourish keys to play for `t`: only ids that are unlocked AND resolve in
  * the pack, never under reduced motion. focusCompleted plays `long_session`
- * (long sessions) or else `celebrate`, then `acorn_gift`.
+ * (long sessions) or else `celebrate`, then `acorn_gift`. `unlocked` may be the
+ * pre-award set: ids in the transition's own award count as unlocked.
  */
 export function flourishesFor(
   t: Transition,
@@ -52,13 +66,79 @@ export function flourishesFor(
   reducedMotion: boolean,
 ): string[] {
   if (reducedMotion) return [];
-  const have = new Set(unlocked);
+  const have = unlockedAsOf(t, unlocked);
   const out: string[] = [];
   for (const options of candidatesFor(t)) {
     const pick = options.find((k) => have.has(k) && resolvesIn(pack, k));
     if (pick) out.push(pick);
   }
   return out;
+}
+
+/**
+ * The moment a queued one-shot belongs to. A flourish plays at its transition
+ * or not at all: once that moment has passed it is dropped, never deferred
+ * (e.g. a focusStarted wave queued while the companion was hidden must not
+ * play when the companion is shown again mid-session).
+ */
+export type ShotScope =
+  /** focusStarted / breakStarted of this session. */
+  | { kind: "sessionStart"; sessionId: string }
+  /** focusCompleted of this record. */
+  | { kind: "focusDone"; recordId: string }
+  /** breakFinished. */
+  | { kind: "breakDone" }
+  /** A replay (focus://play): any time except running focus (the shell refuses it then). */
+  | { kind: "replay" }
+  /** A character click. */
+  | { kind: "react" };
+
+/** A start flourish (wave, stretch) is current only during its session's first seconds. */
+export const START_SHOT_WINDOW_MS = FLOURISH_MAX_MS;
+
+/** The scope of `t`'s flourishes (null: the transition has none). */
+export function scopeOf(t: Transition): ShotScope | null {
+  switch (t.type) {
+    case "focusStarted":
+    case "breakStarted":
+      return { kind: "sessionStart", sessionId: t.sessionId };
+    case "focusCompleted":
+      return { kind: "focusDone", recordId: t.record.id };
+    case "breakFinished":
+      return { kind: "breakDone" };
+    default:
+      return null;
+  }
+}
+
+export type ScopeInput = MappingInput & Pick<Snapshot, "companionVisible">;
+
+/**
+ * Whether a one-shot of `scope` may still play over snapshot `s`. Callers judge
+ * a one-shot only against snapshots newer than its arrival, because the shell
+ * emits a transition before the snapshot of its own call (SPEC §4.9). Nothing
+ * survives a snapshot that reports the companion hidden.
+ */
+export function scopeIsCurrent(scope: ShotScope, s: ScopeInput): boolean {
+  if (!s.companionVisible) return false;
+  switch (scope.kind) {
+    case "sessionStart":
+      return (
+        s.session?.id === scope.sessionId && s.session.status === "running" && s.session.activeMs < START_SHOT_WINDOW_MS
+      );
+    case "focusDone":
+      return (
+        s.phase === "awaitingChoice" &&
+        s.awaiting?.after === "focus" &&
+        (s.awaiting.record?.id ?? scope.recordId) === scope.recordId
+      );
+    case "breakDone":
+      return s.phase === "awaitingChoice" && s.awaiting?.after === "break";
+    case "replay":
+      return !(s.phase === "focus" && s.session?.status === "running");
+    case "react":
+      return true;
+  }
 }
 
 /** Keys that blink may briefly replace (SPEC §7.1). */

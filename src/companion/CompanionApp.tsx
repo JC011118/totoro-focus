@@ -62,7 +62,7 @@ export function CompanionApp() {
   const unlocks = appInfo?.unlocks ?? [];
   const unlocked = snapshot?.friendship.unlocked ?? [];
 
-  const motion = useCompanionMotion({ pack, unlocked, reducedMotion });
+  const motion = useCompanionMotion({ pack, reducedMotion });
   const [menuOpen, setMenuOpen] = useState(false);
   const [picker, setPicker] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
@@ -73,10 +73,21 @@ export function CompanionApp() {
   const session = snapshot?.session ?? null;
   const lastMinutes = clampMinutes(snapshot?.settings.lastFocusMinutes ?? 25, limits);
   const canStart = snapshot !== null && (phase === "idle" || phase === "awaitingChoice");
+
+  // The stepper belongs to the idle moment it was opened in. A session started
+  // any other way (tray, hotkey, Settings) closes it, so the completion
+  // choices are never hidden behind a stale stepper afterwards.
+  const [pickerCanStart, setPickerCanStart] = useState(canStart);
+  if (pickerCanStart !== canStart) {
+    setPickerCanStart(canStart);
+    if (!canStart) setPicker(null);
+  }
   const pickerOpen = picker !== null && canStart;
 
   const openPicker = () => setPicker(lastMinutes);
   useBackendEvent("openPicker", () => {
+    // Tray "Custom duration…" is only meaningful when a session could start.
+    if (!canStart) return;
     setMenuOpen(false);
     openPicker();
   });
@@ -87,6 +98,7 @@ export function CompanionApp() {
       showNote(`Saved ${min} min${pts > 0 ? ` · +${pts}` : ""}`);
     } else if (t.type === "focusStarted" || t.type === "breakStarted") {
       clearNote();
+      setPicker(null);
     }
   });
 

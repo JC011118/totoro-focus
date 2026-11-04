@@ -1,6 +1,6 @@
 // Reusable character renderer (companion widget now, illustrated scene later).
-// Renders from plain props; owns only presentation timers (blink, hop,
-// reduced-motion stills). It never issues commands.
+// Renders from plain props; owns only presentation timers (blink, hop). It
+// never issues commands.
 
 import { useEffect, useEffectEvent, useRef, useState, type MouseEvent } from "react";
 import type { ResolvedAnimation } from "../ipc/bindings/ResolvedAnimation";
@@ -39,8 +39,6 @@ export interface CharacterViewProps {
   onContextMenu?: (e: MouseEvent) => void;
 }
 
-/** Under reduced motion a replay shows the animation's still frame this long. */
-export const STILL_REPLAY_MS = 1500;
 const BLINK_MIN_MS = 5000;
 const BLINK_SPREAD_MS = 4000;
 
@@ -59,19 +57,13 @@ export function CharacterView(props: CharacterViewProps) {
   const baseAnim = anim(pack, baseKey) ?? anim(pack, "idle");
   const blinkAnim = anim(pack, "blink");
 
-  // One-shots without art end immediately; under reduced motion they show a still briefly.
+  // One-shots without art end immediately, and so does every one-shot under
+  // reduced motion (SPEC §7.1: no flourishes; the base key's still frame stays).
   const shotKey = oneShot ? `${oneShot.key}:${oneShot.nonce}` : null;
-  const shotMissing = oneShot !== null && oneShot !== undefined && shotAnim === null;
+  const shotSkipped = oneShot !== null && oneShot !== undefined && (shotAnim === null || reducedMotion);
   useEffect(() => {
-    if (shotKey === null) return;
-    if (shotMissing) {
-      oneShotEnded();
-      return;
-    }
-    if (!reducedMotion) return;
-    const t = setTimeout(oneShotEnded, STILL_REPLAY_MS);
-    return () => clearTimeout(t);
-  }, [shotKey, shotMissing, reducedMotion]);
+    if (shotKey !== null && shotSkipped) oneShotEnded();
+  }, [shotKey, shotSkipped]);
 
   // Blink: a one-shot that replaces idle/focus every 5–9 s, skipped when there is no blink art.
   const canBlink = Boolean(props.blink) && !reducedMotion && blinkAnim !== null && !oneShot && canBlinkOver(baseKey);
@@ -106,14 +98,14 @@ export function CharacterView(props: CharacterViewProps) {
 
   const spriteBox = { width, height };
   let content;
-  if (oneShot && shotAnim) {
+  if (oneShot && shotAnim && !reducedMotion) {
     content = (
       <Sprite
         key={`shot:${oneShot.key}:${oneShot.nonce}`}
         anim={shotAnim}
         rendering={rendering}
         {...spriteBox}
-        mode={reducedMotion ? "still" : "once"}
+        mode="once"
         maxMs={FLOURISH_MAX_MS}
         onEnd={props.onOneShotEnd}
       />

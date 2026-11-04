@@ -1,8 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { SessionRecord } from "../ipc/bindings/SessionRecord";
+import type { SessionView } from "../ipc/bindings/SessionView";
 import type { Transition } from "../ipc/bindings/Transition";
-import { ALL_IDS, anim, makePack, makeSnapshot, session } from "../test/fixtures";
-import { baseKeyFor, canBlinkOver, flourishesFor } from "./mapping";
+import { ALL_IDS, anim, makePack, makeSnapshot, session, UNLOCKS } from "../test/fixtures";
+import {
+  baseKeyFor,
+  canBlinkOver,
+  flourishesFor,
+  scopeIsCurrent,
+  scopeOf,
+  START_SHOT_WINDOW_MS,
+  unlockedAsOf,
+  type ShotScope,
+} from "./mapping";
 import {
   backgroundPosition,
   backgroundSize,
@@ -88,6 +98,115 @@ describe("flourishesFor (SPEC §7.1)", () => {
   it("never plays under reduced motion", () => {
     expect(flourishesFor(completed(false), ALL_IDS, everything, true)).toEqual([]);
     expect(flourishesFor({ type: "focusStarted", sessionId: "s", plannedMs: 1 }, ALL_IDS, everything, true)).toEqual([]);
+  });
+
+  it("counts the completing session's own award as unlocked (its snapshot arrives after the transition)", () => {
+    const upToSleepy = ["base", "wave", "stretch", "umbrella", "evening", "sleepy"];
+    const award = (newlyUnlocked: string[]) => ({ sessionId: "s1", points: 25, bonus: 5, totalPoints: 355, newlyUnlocked });
+    const t = (newlyUnlocked: string[], longSession = false): Transition => ({
+      type: "focusCompleted",
+      record,
+      award: award(newlyUnlocked),
+      longSession,
+    });
+    expect(flourishesFor(t([]), upToSleepy, everything, false)).toEqual([]);
+    expect(flourishesFor(t(["celebrate"]), upToSleepy, everything, false)).toEqual(["celebrate"]);
+    expect(flourishesFor(t(["acorn_gift"]), [...upToSleepy, "celebrate"], everything, false)).toEqual([
+      "celebrate",
+      "acorn_gift",
+    ]);
+    const before1000 = UNLOCKS.filter((u) => u.points < 1000).map((u) => u.id);
+    expect(flourishesFor(t(["long_session"], true), before1000, everything, false)).toEqual(["long_session", "acorn_gift"]);
+    // Still subject to the pack and to reduced motion.
+    expect(flourishesFor(t(["celebrate"]), upToSleepy, makePack(["idle"]), false)).toEqual([]);
+    expect(flourishesFor(t(["celebrate"]), upToSleepy, everything, true)).toEqual([]);
+  });
+});
+
+describe("unlockedAsOf", () => {
+  it("adds award unlocks only for focus endings", () => {
+    const award = { sessionId: "s1", points: 1, bonus: 0, totalPoints: 1, newlyUnlocked: ["celebrate"] };
+    expect([...unlockedAsOf({ type: "focusCompleted", record, award, longSession: false }, ["base"])].sort()).toEqual([
+      "base",
+      "celebrate",
+    ]);
+    expect([
+      ...unlockedAsOf({ type: "focusInterrupted", record: { ...record, outcome: "interrupted" }, award }, ["base"]),
+    ]).toContain("celebrate");
+    expect([...unlockedAsOf({ type: "focusCompleted", record, award: null, longSession: false }, ["base"])]).toEqual([
+      "base",
+    ]);
+    expect([...unlockedAsOf({ type: "focusStarted", sessionId: "s", plannedMs: 1 }, ["base"])]).toEqual(["base"]);
+  });
+});
+
+describe("one-shot scopes: a flourish plays at its moment or not at all", () => {
+  const visible = { companionVisible: true };
+  const running = (extra: Partial<SessionView> = {}) =>
+    makeSnapshot({ phase: "focus", session: session({ id: "s2", activeMs: 0, ...extra }) });
+  const doneAfterFocus = (id: string) =>
+    makeSnapshot({
+      phase: "awaitingChoice",
+      awaiting: { after: "focus", record: { ...record, id }, award: null, longSession: false },
+    });
+  const doneAfterBreak = makeSnapshot({
+    phase: "awaitingChoice",
+    awaiting: { after: "break", record: null, award: null, longSession: false },
+  });
+
+  it("scopes each transition with flourishes", () => {
+    expect(scopeOf({ type: "focusStarted", sessionId: "s2", plannedMs: 1 })).toEqual({ kind: "sessionStart", sessionId: "s2" });
+    expect(scopeOf({ type: "breakStarted", sessionId: "b1", plannedMs: 1 })).toEqual({ kind: "sessionStart", sessionId: "b1" });
+    expect(scopeOf({ type: "focusCompleted", record, award: null, longSession: false })).toEqual({
+      kind: "focusDone",
+      recordId: "s1",
+    });
+    expect(scopeOf({ type: "breakFinished", sessionId: "b1" })).toEqual({ kind: "breakDone" });
+    expect(scopeOf({ type: "dismissed" })).toBeNull();
+    expect(scopeOf({ type: "paused", sessionId: "s", kind: "focus", reason: "user" })).toBeNull();
+  });
+
+  it("a start flourish is current only in its own session's first seconds", () => {
+    const start: ShotScope = { kind: "sessionStart", sessionId: "s2" };
+    expect(scopeIsCurrent(start, running())).toBe(true);
+    expect(scopeIsCurrent(start, running({ activeMs: START_SHOT_WINDOW_MS - 1 }))).toBe(true);
+    expect(scopeIsCurrent(start, running({ activeMs: START_SHOT_WINDOW_MS }))).toBe(false);
+    expect(scopeIsCurrent(start, running({ activeMs: 600_000 }))).toBe(false);
+    expect(scopeIsCurrent(start, running({ status: "paused" }))).toBe(false);
+    expect(scopeIsCurrent(start, running({ id: "s3" }))).toBe(false);
+    expect(scopeIsCurrent(start, makeSnapshot())).toBe(false);
+    expect(scopeIsCurrent(start, doneAfterFocus("s2"))).toBe(false);
+    const breakStart: ShotScope = { kind: "sessionStart", sessionId: "b1" };
+    const breakRunning = makeSnapshot({ phase: "break", session: session({ id: "b1", kind: "break", activeMs: 1000 }) });
+    expect(scopeIsCurrent(breakStart, breakRunning)).toBe(true);
+  });
+
+  it("completion flourishes are current while that completion is on screen", () => {
+    const done: ShotScope = { kind: "focusDone", recordId: "s2" };
+    expect(scopeIsCurrent(done, doneAfterFocus("s2"))).toBe(true);
+    expect(scopeIsCurrent(done, doneAfterFocus("s9"))).toBe(false);
+    expect(scopeIsCurrent(done, makeSnapshot())).toBe(false);
+    expect(scopeIsCurrent(done, running({ id: "s3" }))).toBe(false);
+    expect(scopeIsCurrent(done, doneAfterBreak)).toBe(false);
+    const hum: ShotScope = { kind: "breakDone" };
+    expect(scopeIsCurrent(hum, doneAfterBreak)).toBe(true);
+    expect(scopeIsCurrent(hum, running())).toBe(false);
+    expect(scopeIsCurrent(hum, makeSnapshot())).toBe(false);
+  });
+
+  it("replays never run into active focus; clicks always may", () => {
+    expect(scopeIsCurrent({ kind: "replay" }, makeSnapshot())).toBe(true);
+    expect(scopeIsCurrent({ kind: "replay" }, running({ status: "paused" }))).toBe(true);
+    expect(scopeIsCurrent({ kind: "replay" }, running())).toBe(false);
+    expect(scopeIsCurrent({ kind: "react" }, running({ activeMs: 600_000 }))).toBe(true);
+  });
+
+  it("nothing is current while the shell reports the companion hidden", () => {
+    const hidden = { companionVisible: false };
+    expect(scopeIsCurrent({ kind: "sessionStart", sessionId: "s2" }, { ...running(), ...hidden })).toBe(false);
+    expect(scopeIsCurrent({ kind: "focusDone", recordId: "s2" }, { ...doneAfterFocus("s2"), ...hidden })).toBe(false);
+    expect(scopeIsCurrent({ kind: "react" }, { ...makeSnapshot(), ...hidden })).toBe(false);
+    expect(scopeIsCurrent({ kind: "react" }, { ...makeSnapshot(), ...visible })).toBe(true);
   });
 });
 

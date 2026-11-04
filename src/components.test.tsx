@@ -160,6 +160,27 @@ describe("CharacterView", () => {
     }
   });
 
+  it("under reduced motion a one-shot never shows: the base still stays and the shot ends at once", () => {
+    const onEnd = vi.fn();
+    const pack = makePack(["idle", "wave"]);
+    const { container } = render(
+      <CharacterView
+        pack={pack}
+        baseKey="idle"
+        oneShot={{ key: "wave", nonce: 1 }}
+        onOneShotEnd={onEnd}
+        reducedMotion
+        width={74}
+        height={74}
+        label="c"
+      />,
+    );
+    const sprite = container.querySelector(".sprite");
+    expect(sprite?.getAttribute("data-anim")).toBe("idle");
+    expect(sprite?.getAttribute("data-frame")).toBe(String(pack.animations.idle?.stillFrame));
+    expect(onEnd).toHaveBeenCalledTimes(1);
+  });
+
   it("ends a one-shot without art immediately", () => {
     const onEnd = vi.fn();
     render(
