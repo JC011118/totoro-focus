@@ -431,3 +431,28 @@ fn friendship_json_shape() {
     let back: Friendship = serde_json::from_value(v).unwrap();
     assert_eq!(back, f);
 }
+
+#[test]
+fn builtin_palettes_are_all_safe_and_every_palette_unlock_has_one() {
+    let t = focus_core::rewards::UnlockTable::builtin();
+    for u in &t.unlocks {
+        if u.kind == focus_core::rewards::UnlockKind::Palette {
+            let p = u
+                .palette
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} has no default palette", u.id));
+            let (_, dropped) = focus_core::palette::sanitize_palette(p);
+            assert!(dropped.is_empty(), "{}: {dropped:?}", u.id);
+        }
+    }
+}
+
+#[test]
+fn unsafe_unlock_palette_values_are_rejected() {
+    let json = r#"{"format":1,"rules":{"pointsPerActiveMinute":1,"completionBonus":5,"longSessionMinutes":45},
+      "unlocks":[{"id":"base","points":0,"kind":"states","trigger":"always","label":"b","description":"d"},
+                 {"id":"evil","points":10,"kind":"palette","trigger":"manual","label":"e","description":"d",
+                  "palette":{"background":"url(https://example.com/x.png)"}}]}"#;
+    let err = focus_core::rewards::UnlockTable::parse(json).unwrap_err();
+    assert!(err.contains("unsafe palette"), "{err}");
+}

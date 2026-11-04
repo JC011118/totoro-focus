@@ -107,6 +107,17 @@ impl UnlockTable {
             if !is_valid_unlock_id(&u.id) {
                 return Err(format!("invalid unlock id {:?}", u.id));
             }
+            // Default palettes reach the renderer as CSS custom properties: only
+            // allow-listed color/filter values (palette::sanitize_palette) pass.
+            if let Some(p) = &u.palette {
+                let (_, dropped) = crate::palette::sanitize_palette(p);
+                if !dropped.is_empty() {
+                    return Err(format!(
+                        "unlock {}: unsafe palette values: {dropped:?}",
+                        u.id
+                    ));
+                }
+            }
             if !seen.insert(u.id.as_str()) {
                 return Err(format!("duplicate unlock id {:?}", u.id));
             }

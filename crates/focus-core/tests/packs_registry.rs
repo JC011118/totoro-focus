@@ -920,18 +920,15 @@ mod packs {
 
     // ---------------------------------------------------------------- shipped pack
 
-    /// Loads the repo's `packs/placeholder` exactly as the shell embeds it. Skips
-    /// (passes with a note) until the placeholder art has landed.
+    /// Loads the repo's `packs/placeholder` exactly as the shell embeds it.
     #[test]
     fn shipped_placeholder_pack_is_valid() {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packs/placeholder");
-        if !dir.join("pack.json").exists() {
-            eprintln!(
-                "SKIP shipped_placeholder_pack_is_valid: {} has no pack.json yet",
-                dir.display()
-            );
-            return;
-        }
+        assert!(
+            dir.join("pack.json").exists(),
+            "{} must contain the shipped placeholder pack",
+            dir.display()
+        );
         let r = PackRegistry::load(bundle_dir(&dir), None, None);
         let p = info(&r, PLACEHOLDER_ID);
         assert!(p.valid, "packs/placeholder is invalid: {:?}", p.errors);
@@ -939,8 +936,25 @@ mod packs {
         if !p.warnings.is_empty() {
             eprintln!("packs/placeholder warnings: {:#?}", p.warnings);
         }
-        let rp = r.resolve_pack(PLACEHOLDER_ID, &table(), PREFIX);
+        let builtin = focus_core::rewards::UnlockTable::builtin();
+        let rp = r.resolve_pack(PLACEHOLDER_ID, &builtin, PREFIX);
         assert_eq!(rp.fallback_from, None);
+        // The placeholder ships art for every animation / idle-variant unlock in the
+        // real table, so every unlock visibly does something with the default pack.
+        for u in builtin.unlocks.iter().filter(|u| {
+            matches!(
+                u.kind,
+                focus_core::rewards::UnlockKind::Animation
+                    | focus_core::rewards::UnlockKind::IdleVariant
+            )
+        }) {
+            let a = rp.animations.get(&u.id).and_then(|a| a.as_ref());
+            assert!(
+                a.is_some_and(|a| a.source_key == u.id),
+                "unlock {} has no own animation in the placeholder pack",
+                u.id
+            );
+        }
         for k in BASE_STATES {
             assert!(
                 rp.animations[k].is_some(),

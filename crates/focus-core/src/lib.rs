@@ -20,5 +20,7 @@ pub mod testkit;
 pub mod timer;
 
 pub use clock::{Clock, FakeClock, Mono, Now, SystemClock, Wall};
-pub use engine::{ActivityLevel, Command, CommandError, Effect, Engine, EngineConfig, SoundCue, SystemEvent};
+pub use engine::{
+    ActivityLevel, Command, CommandError, Effect, Engine, EngineConfig, SoundCue, SystemEvent,
+};
 pub use snapshot::Snapshot;

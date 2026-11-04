@@ -32,7 +32,7 @@ export const FOREST: ResolvedPalette = {
   surface: "#e3e9d6",
   text: "#26331f",
   muted: "#55634a",
-  accent: "#4a7535",
+  accent: "#477033",
   ring: "#5b8c43",
   ringTrack: "#d2dac3",
   characterFilter: "none",

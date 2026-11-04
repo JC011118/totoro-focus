@@ -303,6 +303,32 @@ ShowCompanion and clears the flag. Turning it on mid-session takes effect at the
 next start. Any user `show_companion`/`hide_companion` clears `hidden_for_focus`
 (the shell calls `engine.clear_hidden_for_focus()`).
 
+### 4.11 Implementation decisions (recorded after implementation)
+- Command step 4 also sets `baseline = max_by_mono(baseline, now)`. This only
+  matters after a Suspend that was not followed by a Wake.
+- `UpdateSettings` emits Persist and SettingsChanged only when a value actually
+  changes. A no-op patch returns `Ok([])`. The shell's `set_active_pack` and
+  `set_hotkey` broadcast on their own, without relying on SettingsChanged.
+- `Engine::new` resets `settings.palette` to `auto` when it is not `auto`,
+  `forest`, or an unlocked palette-kind id. That counts as a change (Persist).
+- `next_tick_delay_ms` returns 50 when a running session already shows 0
+  remaining but its completion has not been observed yet.
+- A paused focus session that is found due at End or at expiry is completed, not
+  interrupted. `endedAt` is now.wall or pausedAt respectively.
+- `History::today` ignores non-focus records. It falls back to
+  `offset_at(endedAt)` when a stored offset is out of range.
+- A break checkpoint with `accrued == planned` is restored paused. Only focus
+  checkpoints are completed silently.
+- Expiry is still evaluated while suspended (§4.5). A suspended pause longer
+  than 120 minutes therefore ends at the next tick, whether that tick comes
+  before or after the Wake.
+- `Engine::new` can return `FocusInterrupted`/`BreakEnded` (expiry at launch) and
+  `Restored` before any webview exists. The renderer derives persistent visuals
+  from the Snapshot, never from launch transitions.
+- Default unlock palettes in `data/unlocks.json` are validated by
+  `UnlockTable::parse` with the same allow-list as pack palettes. An unsafe value
+  makes the table invalid.
+
 ## 5. Friendship and unlocks
 
 `data/unlocks.json` holds `rules {pointsPerActiveMinute, completionBonus,
@@ -410,6 +436,9 @@ keys. Every key is present in the map, with `null` when unresolved.
 - debug builds only: `packs-local/<dir>/pack.json` (gitignored), which overrides
   user packs with the same id.
 
+Pack files must be regular files: FIFOs and devices are never opened.
+`PackInfo.errors` and `PackInfo.warnings` are each capped at 50 entries, and
+fallback-cycle validation is linear in the number of fallbacks.
 A directory holding `pet.json` and no `pack.json` is loaded as a Petdex pack
 (§7.2). Invalid packs are listed with their errors and cannot be activated
 (`PackUnavailable`). If the active pack is missing at runtime, the placeholder
@@ -453,9 +482,21 @@ one-shot that replaces idle or focus every 5–9 s; it is skipped when null.
 Flourishes are presentation timers only. They never gate, delay or issue
 commands. Replays (`focus://play`) use the flourish path.
 
+Queued one-shots are **dropped, never deferred**, once their moment has
+passed:
+- start flourishes play only within the session's first 4 s of active time;
+- completion flourishes play only while that completion is still shown;
+- replays never play during running focus;
+- nothing plays while `companionVisible` is false.
+
+Flourish eligibility uses the unlocks as of the transition. The award in a
+`focusCompleted` transition counts, even if the snapshot that carries it
+arrives later.
+
 **Reduced motion** is `settings.reducedMotion || prefers-reduced-motion`. Under
 it the companion shows the base key's `stillFrame`, with no flourishes, blink,
-hop or ring transition. A click shows a static speech bubble for about 1.5 s.
+hop or ring transition. A click, or a replay (`focus://play`), shows a static
+speech bubble for about 1.5 s instead of any animation.
 The timer and controls are unchanged.
 
 ### 7.2 Petdex / Codex pet format (optional loader)
@@ -586,13 +627,27 @@ rename, fsync the directory). It holds `settings`, `activeSession` (the
 checkpoint), `history` and `friendship` together, so they stay consistent.
 - On the first save of each process, the existing `state.json` is copied to
   `state.prev.json`.
-- Load:
-  - missing → defaults;
-  - corrupt → moved to `state.corrupt-<UTC stamp>.json`, then `state.prev.json`
-    is tried (`RecoveredFromPrevious`), then defaults;
-  - newer schema → backed up, defaults used, **and saving disabled for this run**
-    (read-only), so a newer file is never replaced with lower totals;
+- Load (`state.json.tmp` is never read):
+  - missing → defaults, creating nothing (`state.prev.json` is not used);
+  - corrupt or unreadable → moved to `state.corrupt-<UTC stamp>.json`, then
+    `state.prev.json` is tried (`RecoveredFromPrevious`), then defaults
+    (`CorruptBackedUp`). When `state.prev.json` is usable, load restores
+    `state.json` from it (atomically), so a crash before the next save loses
+    nothing. This is the only write load makes besides backups;
+  - a corrupt file that **cannot be moved aside** is left untouched, nothing is
+    restored, and saving is disabled for this run (read-only), so it is never
+    overwritten. The note is still `CorruptBackedUp` or `RecoveredFromPrevious`
+    (`backup` = `state.json`; `error` says so);
+  - newer schema → backed up to `state.newer-<UTC stamp>.json`, defaults used,
+    **and saving disabled for this run** (read-only), so a newer file is never
+    replaced with lower totals. If a byte-identical `state.newer-*.json` already
+    exists, it is reused instead of writing another copy. A newer-schema
+    `state.prev.json` found during corrupt-file recovery is restored to
+    `state.json` and handled the same way (read-only);
   - older schema → migrated.
+- **The shell checks `Store::is_read_only()` after every load**, not only on
+  `NewerSchemaReadOnly`: the load note alone does not say whether saving is
+  disabled. While read-only, every save fails with `StoreError::ReadOnly`.
 - Never delete a user's state file.
 
 ## 10. IPC surface
