@@ -14,3 +14,5 @@ node_modules/
 *.log
 # Tauri generated schemas
 /src-tauri/gen/
+# Agent worktrees (temporary, never committed)
+/.claude/worktrees/
