@@ -1,4 +1,6 @@
 {
+  // Renderer code only (src/**): browser and Vite client types, no Node types.
+  // The renderer has no filesystem or Node access (CLAUDE.md rule 7).
   "compilerOptions": {
     "target": "ES2021",
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
@@ -16,7 +18,7 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "noEmit": true,
-    "types": ["vite/client", "node"]
+    "types": ["vite/client"]
   },
-  "include": ["src", "vite.config.ts", "eslint.config.js"]
+  "include": ["src"]
 }
