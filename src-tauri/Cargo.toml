@@ -31,5 +31,7 @@ percent-encoding = "2.3.2"
 tauri-nspanel = "=2.1.1"
 objc2 = "0.6.5"
 block2 = "0.6.2"
-objc2-foundation = { version = "0.3.2", features = ["NSNotification", "NSString", "NSProcessInfo", "NSData", "NSOperation", "NSObject", "block2"] }
-objc2-app-kit = { version = "0.3.2", features = ["NSWorkspace", "NSSound", "NSApplication", "NSResponder", "NSRunningApplication"] }
+# tauri-nspanel enables these crates' default (all-framework) features, so these
+# lists document what the shell uses. NSDate gates NSSystemClockDidChangeNotification.
+objc2-foundation = { version = "0.3.2", features = ["std", "block2", "NSNotification", "NSString", "NSProcessInfo", "NSData", "NSDate", "NSOperation", "NSObject"] }
+objc2-app-kit = { version = "0.3.2", features = ["std", "NSWorkspace", "NSSound", "NSApplication", "NSResponder", "NSRunningApplication", "NSWindow", "NSPanel", "NSView", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSFont", "NSFontDescriptor", "NSGraphics"] }
