@@ -63,6 +63,121 @@ fn geometry_default_position_in_a_tiny_work_area() {
     );
 }
 
+/// Inputs a bad monitor reading can produce (e.g. a scale factor of 0 in `to_logical`).
+const SPECIALS: [f64; 11] = [
+    f64::NAN,
+    f64::INFINITY,
+    f64::NEG_INFINITY,
+    f64::MAX,
+    f64::MIN,
+    -1.0,
+    0.0,
+    1.0,
+    240.0,
+    1440.0,
+    -1920.0,
+];
+
+#[test]
+fn geometry_default_position_invalid_work_area_gives_a_finite_origin() {
+    // Regression: a NaN origin used to panic inside `f64::clamp`, and an infinite
+    // width used to return x = inf.
+    assert_eq!(
+        default_position((W, H), Rect::new(f64::NAN, 0.0, 1440.0, 875.0)),
+        (0.0, 0.0)
+    );
+    assert_eq!(
+        default_position((W, H), Rect::new(0.0, 0.0, f64::INFINITY, 875.0)),
+        (0.0, 0.0)
+    );
+    assert_eq!(
+        default_position((W, H), Rect::new(-1920.0, 25.0, f64::NAN, 1055.0)),
+        (-1920.0, 25.0)
+    );
+    assert_eq!(
+        default_position((W, H), Rect::new(100.0, f64::NEG_INFINITY, 0.0, 900.0)),
+        (100.0, 0.0)
+    );
+    assert_eq!(
+        default_position((W, H), Rect::new(10.0, 20.0, 1440.0, -5.0)),
+        (10.0, 20.0)
+    );
+    // Scale factor 0: every component inf or NaN.
+    assert_eq!(
+        default_position(
+            (W, H),
+            Rect::new(f64::NAN, f64::NAN, f64::INFINITY, f64::INFINITY)
+        ),
+        (0.0, 0.0)
+    );
+}
+
+#[test]
+fn geometry_default_position_unknown_size_is_start_aligned() {
+    // A non-finite or negative size never puts the window past the work area's far edge.
+    for (size, expected) in [
+        ((f64::NAN, H), (PRIMARY.x, primary_default().1)),
+        ((W, f64::INFINITY), (primary_default().0, PRIMARY.y)),
+        ((-500.0, -1.0), (PRIMARY.x, PRIMARY.y)),
+        ((f64::NAN, f64::NAN), (PRIMARY.x, PRIMARY.y)),
+    ] {
+        assert_eq!(default_position(size, PRIMARY), expected, "{size:?}");
+    }
+}
+
+#[test]
+fn geometry_default_position_never_panics_and_is_finite() {
+    let mut checked = 0;
+    for x in SPECIALS {
+        for y in SPECIALS {
+            for width in SPECIALS {
+                for height in SPECIALS {
+                    let wa = Rect::new(x, y, width, height);
+                    for size in [(W, H), (f64::NAN, H), (0.0, 0.0), (-W, f64::INFINITY)] {
+                        let (px, py) = default_position(size, wa);
+                        assert!(
+                            px.is_finite() && py.is_finite(),
+                            "default_position({size:?}, {wa:?}) = ({px}, {py})"
+                        );
+                        if wa.is_valid() && size.0 >= 0.0 && size.1 >= 0.0 {
+                            // Never left of / above the work area.
+                            assert!(px >= wa.x && py >= wa.y, "{size:?} {wa:?}");
+                        }
+                        checked += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(checked, SPECIALS.len().pow(4) * 4);
+}
+
+#[test]
+fn geometry_ensure_visible_never_panics_and_is_finite() {
+    for x in SPECIALS {
+        for y in SPECIALS {
+            for width in SPECIALS {
+                for height in SPECIALS {
+                    let junk = Rect::new(x, y, width, height);
+                    // Junk window on good displays, and good window among junk displays.
+                    for (window, areas) in [
+                        (junk, vec![PRIMARY, RIGHT]),
+                        (win(100.0, 100.0), vec![junk, LEFT]),
+                        (junk, vec![junk]),
+                    ] {
+                        if let Some((px, py)) = ensure_visible(window, &areas, 0) {
+                            assert!(
+                                px.is_finite() && py.is_finite(),
+                                "ensure_visible({window:?}, {areas:?}) = ({px}, {py})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn geometry_default_position_is_itself_visible() {
     for wa in [PRIMARY, RIGHT, LEFT, LAPTOP, TALL] {

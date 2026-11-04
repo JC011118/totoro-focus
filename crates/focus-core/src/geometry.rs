@@ -67,7 +67,21 @@ const CONTAIN_TOLERANCE: f64 = 1.0;
 /// When the work area is too small for the margins on an axis, the window is
 /// centered on that axis; when it is smaller than the window, the window is
 /// aligned to the work area's left/top edge (so the drag strip stays reachable).
+///
+/// Never panics and always returns finite coordinates, whatever the input. The
+/// shell calls this directly (first launch, `reset_companion_position`) with
+/// rects converted from monitor data, which can be degenerate:
+/// - A work area that is not `Rect::is_valid` gives its origin, with each
+///   non-finite coordinate replaced by 0 (the primary display's top-left).
+/// - A size component that is not finite or is negative is treated as unknown:
+///   the window is aligned to the work area's left/top edge on that axis.
+/// - If a coordinate would overflow to infinity (absurdly large finite rects),
+///   the work area's left/top edge is used on that axis.
 pub fn default_position(size: (f64, f64), work_area: Rect) -> (f64, f64) {
+    if !work_area.is_valid() {
+        let finite_or_zero = |v: f64| if v.is_finite() { v } else { 0.0 };
+        return (finite_or_zero(work_area.x), finite_or_zero(work_area.y));
+    }
     (
         place_on_axis(f64::INFINITY, size.0, work_area.x, work_area.width),
         place_on_axis(f64::INFINITY, size.1, work_area.y, work_area.height),
@@ -184,12 +198,31 @@ fn clamp_into(window: &Rect, wa: &Rect) -> (f64, f64) {
 
 /// Clamp `pos` into `[start + EDGE_MARGIN, start + len - size - EDGE_MARGIN]`.
 /// Too little room for both margins → centered; window larger than the span → `start`.
+///
+/// Never panics, and the result is finite whenever `start` is (otherwise it is 0).
+/// A `len` that is not finite, or a `size` that is not finite or is negative, gives
+/// `start`; so does a result that would overflow to infinity. `pos` may be
+/// infinite (pushed to the far edge) or NaN (taken as the near edge).
 fn place_on_axis(pos: f64, size: f64, start: f64, len: f64) -> f64 {
+    if !start.is_finite() {
+        return 0.0;
+    }
+    if !(len.is_finite() && size.is_finite() && size >= 0.0) {
+        return start;
+    }
     let room = len - size;
-    if room >= 2.0 * EDGE_MARGIN {
-        pos.clamp(start + EDGE_MARGIN, start + room - EDGE_MARGIN)
+    let placed = if room >= 2.0 * EDGE_MARGIN {
+        // Not `f64::clamp`: it panics when a bound is NaN or the bounds cross, and
+        // rounding at huge magnitudes could make them cross. `max` then `min` never
+        // panics, and `max` maps a NaN `pos` to the lower bound.
+        pos.max(start + EDGE_MARGIN).min(start + room - EDGE_MARGIN)
     } else if room >= 0.0 {
         start + room / 2.0
+    } else {
+        start
+    };
+    if placed.is_finite() {
+        placed
     } else {
         start
     }
@@ -219,6 +252,88 @@ mod tests {
         assert_eq!(place_on_axis(0.0, 240.0, 100.0, 200.0), 100.0);
         // NaN size never panics.
         assert_eq!(place_on_axis(0.0, f64::NAN, 100.0, 200.0), 100.0);
+    }
+
+    const SPECIALS: [f64; 13] = [
+        f64::NAN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::MAX,
+        f64::MIN,
+        f64::MIN_POSITIVE,
+        -1.0,
+        0.0,
+        24.0,
+        240.0,
+        1e17,
+        -1e17,
+        1e300,
+    ];
+
+    #[test]
+    fn place_on_axis_never_panics_and_is_finite() {
+        for pos in SPECIALS {
+            for size in SPECIALS {
+                for start in SPECIALS {
+                    for len in SPECIALS {
+                        let got = place_on_axis(pos, size, start, len);
+                        if start.is_finite() {
+                            assert!(
+                                got.is_finite(),
+                                "place_on_axis({pos}, {size}, {start}, {len}) = {got}"
+                            );
+                        } else {
+                            assert_eq!(got, 0.0, "place_on_axis({pos}, {size}, {start}, {len})");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn place_on_axis_bad_inputs_fall_back_to_start() {
+        // Non-finite extent.
+        assert_eq!(place_on_axis(f64::INFINITY, 240.0, 10.0, f64::NAN), 10.0);
+        assert_eq!(
+            place_on_axis(f64::INFINITY, 240.0, 10.0, f64::INFINITY),
+            10.0
+        );
+        // Non-finite origin.
+        assert_eq!(place_on_axis(f64::INFINITY, 240.0, f64::NAN, 1000.0), 0.0);
+        assert_eq!(
+            place_on_axis(f64::INFINITY, 240.0, f64::NEG_INFINITY, 1000.0),
+            0.0
+        );
+        // Negative or infinite size is unknown: start-aligned, never past the far edge.
+        assert_eq!(place_on_axis(f64::INFINITY, -1000.0, 10.0, 1000.0), 10.0);
+        assert_eq!(
+            place_on_axis(f64::INFINITY, f64::INFINITY, 10.0, 1000.0),
+            10.0
+        );
+        // NaN position: the near edge, inset by the margin.
+        assert_eq!(place_on_axis(f64::NAN, 240.0, 0.0, 1000.0), 24.0);
+        // A result that would overflow to infinity: start.
+        assert_eq!(
+            place_on_axis(f64::INFINITY, 0.0, f64::MAX, f64::MAX),
+            f64::MAX
+        );
+    }
+
+    #[test]
+    fn place_on_axis_survives_bounds_that_cross_by_rounding() {
+        // A valid (finite, positive) span where rounding puts the lower bound above
+        // the upper one: `f64::clamp` would panic with "min > max" here.
+        let start = 2f64.powi(57) + 32.0; // ULP is 32 at this magnitude
+        let len = 2.0 * EDGE_MARGIN;
+        let (lo, hi) = (start + EDGE_MARGIN, start + len - EDGE_MARGIN);
+        assert!(lo > hi, "precondition: {lo} > {hi}");
+        let got = place_on_axis(f64::INFINITY, 0.0, start, len);
+        assert!(got.is_finite());
+        assert_eq!(got, hi);
+        assert!(Rect::new(start, 0.0, len, 100.0).is_valid());
+        let (x, _) = default_position((0.0, 10.0), Rect::new(start, 0.0, len, 100.0));
+        assert_eq!(x, hi);
     }
 
     #[test]

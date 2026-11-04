@@ -8,7 +8,7 @@ use std::fs;
 use std::path::Path;
 
 use focus_core::store::{
-    LoadNote, PersistedState, Store, StoreError, PREV_FILE, STATE_FILE, TMP_FILE,
+    backup_stamp, LoadNote, PersistedState, Store, StoreError, PREV_FILE, STATE_FILE, TMP_FILE,
 };
 use serde_json::json;
 use store_support::*;
@@ -19,6 +19,14 @@ fn corrupt_name() -> String {
 
 fn newer_name() -> String {
     format!("state.newer-{STAMP}.json")
+}
+
+/// The newer-schema backups in `dir`, sorted.
+fn newer_backups(dir: &Path) -> Vec<String> {
+    file_names(dir)
+        .into_iter()
+        .filter(|n| n.starts_with("state.newer-"))
+        .collect()
 }
 
 fn write(dir: &Path, name: &str, bytes: &[u8]) {
@@ -165,28 +173,45 @@ fn store_unreadable_state_path_is_moved_aside() {
     assert_eq!(Store::new(dir.path()).load(t0()).state, full_state());
 }
 
+/// Make `dir` read-only (0555). Returns false (and restores 0755) when directory
+/// permissions are not enforced for this user (root, CAP_DAC_OVERRIDE): the
+/// scenario cannot be produced then and the caller skips. Run the binary under
+/// `setpriv --bounding-set -dac_override,-dac_read_search --inh-caps
+/// -dac_override,-dac_read_search` to exercise these tests as root.
+#[cfg(unix)]
+fn lock_dir(dir: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).unwrap();
+    let probe = dir.join("probe");
+    if fs::write(&probe, b"").is_ok() {
+        fs::remove_file(&probe).unwrap();
+        unlock_dir(dir);
+        eprintln!("skipped: directory permissions are not enforced for this user");
+        return false;
+    }
+    true
+}
+
+#[cfg(unix)]
+fn unlock_dir(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn store_corrupt_file_that_cannot_be_moved_makes_the_store_read_only() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = tempfile::tempdir().unwrap();
     let app = dir.path().join("app");
     fs::create_dir(&app).unwrap();
     write(&app, STATE_FILE, b"garbage");
-    fs::set_permissions(&app, fs::Permissions::from_mode(0o555)).unwrap();
-    // Root ignores directory permissions; then this scenario cannot be produced.
-    let probe = app.join("probe");
-    if fs::write(&probe, b"").is_ok() {
-        fs::remove_file(&probe).unwrap();
-        fs::set_permissions(&app, fs::Permissions::from_mode(0o755)).unwrap();
-        eprintln!("skipped: directory permissions are not enforced for this user");
+    if !lock_dir(&app) {
         return;
     }
 
     let store = Store::new(&app);
     let report = store.load(t0());
-    fs::set_permissions(&app, fs::Permissions::from_mode(0o755)).unwrap();
+    unlock_dir(&app);
     match &report.note {
         LoadNote::CorruptBackedUp { backup, error } => {
             assert_eq!(backup, &app.join(STATE_FILE));
@@ -200,6 +225,100 @@ fn store_corrupt_file_that_cannot_be_moved_makes_the_store_read_only() {
         Err(StoreError::ReadOnly)
     ));
     assert_eq!(read(&app, STATE_FILE), b"garbage");
+}
+
+#[cfg(unix)]
+#[test]
+fn store_unmovable_corrupt_file_with_a_good_prev_recovers_but_is_read_only() {
+    // The note is RecoveredFromPrevious, yet nothing was moved or restored and every
+    // save fails: the shell must check is_read_only() after load (SPEC §9).
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("app");
+    fs::create_dir(&app).unwrap();
+    let good = to_json(&full_state());
+    write(&app, PREV_FILE, &good);
+    write(&app, STATE_FILE, b"garbage");
+    if !lock_dir(&app) {
+        return;
+    }
+
+    let store = Store::new(&app);
+    let report = store.load(t0());
+    unlock_dir(&app);
+    match &report.note {
+        LoadNote::RecoveredFromPrevious { backup, error } => {
+            assert_eq!(
+                backup,
+                &app.join(STATE_FILE),
+                "not moved: the original path"
+            );
+            assert!(error.contains("could not move it aside"), "{error}");
+            assert!(error.contains("saving is disabled"), "{error}");
+        }
+        other => panic!("expected RecoveredFromPrevious, got {other:?}"),
+    }
+    assert_eq!(report.state, full_state());
+    assert!(store.is_read_only());
+    // Read-only even though the directory is writable again.
+    match store.save(&full_state()) {
+        Err(e @ StoreError::ReadOnly) => {
+            assert!(e.to_string().contains("could not be moved aside"), "{e}")
+        }
+        other => panic!("expected ReadOnly, got {other:?}"),
+    }
+    // Nothing was moved, restored or created.
+    assert_eq!(read(&app, STATE_FILE), b"garbage");
+    assert_eq!(read(&app, PREV_FILE), good);
+    assert_eq!(file_names(&app), [STATE_FILE, PREV_FILE]);
+}
+
+#[cfg(unix)]
+#[test]
+fn store_newer_file_in_an_unwritable_dir_is_left_as_its_own_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("app");
+    fs::create_dir(&app).unwrap();
+    let newer = newer_doc(5000);
+    write(&app, STATE_FILE, &newer);
+    if !lock_dir(&app) {
+        return;
+    }
+    let store = Store::new(&app);
+    let report = store.load(t0());
+    unlock_dir(&app);
+    assert_eq!(
+        report.note,
+        LoadNote::NewerSchemaReadOnly {
+            backup: app.join(STATE_FILE),
+            version: 2
+        }
+    );
+    assert!(store.is_read_only());
+    assert_eq!(file_names(&app), [STATE_FILE]);
+    assert_eq!(read(&app, STATE_FILE), newer);
+}
+
+#[cfg(unix)]
+#[test]
+fn store_identical_newer_backup_is_found_in_an_unwritable_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = dir.path().join("app");
+    fs::create_dir(&app).unwrap();
+    let newer = newer_doc(5000);
+    write(&app, STATE_FILE, &newer);
+    write(&app, "state.newer-20200101T000000Z.json", &newer);
+    if !lock_dir(&app) {
+        return;
+    }
+    let report = Store::new(&app).load(t0());
+    unlock_dir(&app);
+    assert_eq!(
+        report.note,
+        LoadNote::NewerSchemaReadOnly {
+            backup: app.join("state.newer-20200101T000000Z.json"),
+            version: 2
+        }
+    );
 }
 
 // ---- state.prev.json ---------------------------------------------------------
@@ -363,14 +482,19 @@ fn store_corrupt_state_with_newer_prev_is_read_only() {
     assert_eq!(read(dir.path(), &corrupt_name()), b"garbage");
     assert_eq!(read(dir.path(), &newer_name()), newer);
     assert_eq!(read(dir.path(), PREV_FILE), newer);
-    // The newest good data is back in state.json, so the next run is read-only too.
+    // The newest good data is back in state.json, so the next run is read-only too,
+    // and it reuses the backup this run made instead of adding another copy.
     assert_eq!(read(dir.path(), STATE_FILE), newer);
     let next = Store::new(dir.path());
-    assert!(matches!(
-        next.load(t0()).note,
-        LoadNote::NewerSchemaReadOnly { version: 2, .. }
-    ));
+    assert_eq!(
+        next.load(at(24 * 60, 0)).note,
+        LoadNote::NewerSchemaReadOnly {
+            backup: dir.path().join(newer_name()),
+            version: 2
+        }
+    );
     assert!(next.is_read_only());
+    assert_eq!(newer_backups(dir.path()), [newer_name()]);
 }
 
 // ---- newer schema ------------------------------------------------------------
@@ -443,6 +567,143 @@ fn store_newer_backup_name_gets_a_numeric_suffix_when_taken() {
     );
     assert_eq!(read(dir.path(), &newer_name()), b"earlier backup");
     assert_eq!(fs::read(expected).unwrap(), newer_doc(2));
+}
+
+#[test]
+fn store_repeated_loads_of_the_same_newer_file_keep_one_backup() {
+    // Regression: every launch of an older build used to add another identical copy,
+    // and nothing ever deletes them.
+    let dir = tempfile::tempdir().unwrap();
+    let newer = newer_doc(5000);
+    write(dir.path(), STATE_FILE, &newer);
+    let first = dir.path().join(newer_name());
+    for day in 0..5 {
+        let store = Store::new(dir.path());
+        let report = store.load(at(day * 24 * 60, 0));
+        assert_eq!(
+            report.note,
+            LoadNote::NewerSchemaReadOnly {
+                backup: first.clone(),
+                version: 2
+            },
+            "day {day}"
+        );
+        assert_eq!(report.state, PersistedState::default());
+        assert!(store.is_read_only(), "day {day}");
+    }
+    // The same second as the first copy (would otherwise get a `-1` suffix).
+    let again = Store::new(dir.path());
+    again.load(t0());
+    assert!(again.is_read_only());
+
+    assert_eq!(newer_backups(dir.path()), [newer_name()]);
+    assert_eq!(
+        file_names(dir.path()),
+        [STATE_FILE.to_string(), newer_name()]
+    );
+    assert_eq!(read(dir.path(), &newer_name()), newer);
+    assert_eq!(read(dir.path(), STATE_FILE), newer);
+}
+
+#[test]
+fn store_changed_newer_file_gets_its_own_backup() {
+    // The newer build ran in between and wrote more: that content is backed up too,
+    // and the earlier copy is kept. (5000 and 6000 serialize to the same length, so
+    // this also checks that equal size alone is not taken as "identical".)
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    assert_eq!(newer_doc(5000).len(), newer_doc(6000).len());
+    write(d, STATE_FILE, &newer_doc(5000));
+    Store::new(d).load(t0());
+
+    write(d, STATE_FILE, &newer_doc(6000));
+    let day1 = at(24 * 60, 0);
+    let second = format!("state.newer-{}.json", backup_stamp(day1));
+    assert_eq!(
+        Store::new(d).load(day1).note,
+        LoadNote::NewerSchemaReadOnly {
+            backup: d.join(&second),
+            version: 2
+        }
+    );
+    assert_eq!(newer_backups(d), [newer_name(), second.clone()]);
+    assert_eq!(read(d, &newer_name()), newer_doc(5000));
+    assert_eq!(read(d, &second), newer_doc(6000));
+
+    // Back to the first content: its existing copy is reused.
+    write(d, STATE_FILE, &newer_doc(5000));
+    assert_eq!(
+        Store::new(d).load(at(2 * 24 * 60, 0)).note,
+        LoadNote::NewerSchemaReadOnly {
+            backup: d.join(newer_name()),
+            version: 2
+        }
+    );
+    assert_eq!(newer_backups(d), [newer_name(), second]);
+}
+
+#[test]
+fn store_identical_newer_backup_reuse_picks_the_first_by_name() {
+    // E.g. duplicates left by an earlier build of this app: none is added or removed.
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let newer = newer_doc(5000);
+    write(d, "state.newer-20260101T000000Z.json", b"something else");
+    write(d, "state.newer-20260201T000000Z-1.json", &newer);
+    write(d, "state.newer-20260201T000000Z.json", &newer);
+    write(d, "state.newer-20260202T000000Z.json", &newer);
+    write(d, STATE_FILE, &newer);
+    let before = file_names(d);
+
+    let report = Store::new(d).load(t0());
+    assert_eq!(
+        report.note,
+        LoadNote::NewerSchemaReadOnly {
+            backup: d.join("state.newer-20260201T000000Z-1.json"),
+            version: 2
+        }
+    );
+    assert_eq!(file_names(d), before);
+    assert_eq!(
+        read(d, "state.newer-20260101T000000Z.json"),
+        b"something else"
+    );
+}
+
+#[test]
+fn store_identical_newer_backup_must_be_a_regular_file_with_the_newer_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let d = dir.path();
+    let newer = newer_doc(5000);
+    write(d, STATE_FILE, &newer);
+    // Same bytes, but not a newer-schema backup by name.
+    write(d, "state.corrupt-20200101T000000Z.json", &newer);
+    write(d, "state.newer-20200101T000000Z.json.bak", &newer);
+    write(d, "old-state.newer-20200101T000000Z.json", &newer);
+    write(d, PREV_FILE, &newer);
+    // A directory with a backup name.
+    fs::create_dir(d.join("state.newer-20200101T000000Z.json")).unwrap();
+    // A symlink with a backup name pointing at identical bytes: its target can
+    // change or vanish, so it is not trusted as the backup.
+    let elsewhere = tempfile::tempdir().unwrap();
+    write(elsewhere.path(), "copy.json", &newer);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        elsewhere.path().join("copy.json"),
+        d.join("state.newer-20200102T000000Z.json"),
+    )
+    .unwrap();
+
+    let report = Store::new(d).load(t0());
+    assert_eq!(
+        report.note,
+        LoadNote::NewerSchemaReadOnly {
+            backup: d.join(newer_name()),
+            version: 2
+        }
+    );
+    assert_eq!(read(d, &newer_name()), newer);
+    assert!(d.join("state.newer-20200101T000000Z.json").is_dir());
 }
 
 // ---- crash leftovers -----------------------------------------------------------
