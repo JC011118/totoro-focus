@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="128" viewBox="0 0 256 128">
+  <!-- Row 0: idle (4 frames, a sprout that sways). Row 1: focus (2 frames). Original test art, CC0-1.0. -->
+  <g fill="#6aa84f" stroke="#38761d" stroke-width="2">
+    <ellipse cx="32" cy="40" rx="14" ry="16"/>
+    <ellipse cx="96" cy="41" rx="14" ry="15"/>
+    <ellipse cx="160" cy="40" rx="14" ry="16"/>
+    <ellipse cx="224" cy="39" rx="14" ry="17"/>
+    <ellipse cx="32" cy="104" rx="14" ry="16"/>
+    <ellipse cx="96" cy="105" rx="14" ry="15"/>
+  </g>
+  <g fill="#38761d">
+    <path d="M32 24 q-8 -10 -14 -4 q6 6 14 4z"/>
+    <path d="M96 25 q-7 -10 -13 -5 q6 6 13 5z"/>
+    <path d="M160 24 q8 -10 14 -4 q-6 6 -14 4z"/>
+    <path d="M224 22 q8 -10 14 -4 q-6 6 -14 4z"/>
+    <path d="M32 88 q-8 -10 -14 -4 q6 6 14 4z"/>
+    <path d="M96 89 q-8 -10 -14 -4 q6 6 14 4z"/>
+  </g>
+</svg>

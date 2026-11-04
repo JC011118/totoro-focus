@@ -2,16 +2,25 @@
 //! fallbacks, discovery across sources, and safe file access for the
 //! `pack://` protocol. See docs/SPEC.md §7.
 //!
-//! Implementers may split this into `packs/` submodules (e.g. `manifest`,
-//! `registry`, `petdex`) but must keep these public items stable.
+//! Layout: `manifest` (parse, validate, resolve, render keys), `paths` (path
+//! safety, MIME types, URL encoding), `petdex` (Petdex/Codex pet conversion,
+//! SPEC §7.2) and `registry` (discovery and file serving). The public items
+//! below are re-exported here and are the stable API.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 pub use crate::palette::PaletteSpec;
-use crate::rewards::UnlockTable;
+
+mod manifest;
+mod paths;
+pub mod petdex;
+mod registry;
+
+pub use manifest::{is_valid_pack_id, parse_manifest, render_keys, resolve, validate_manifest};
+pub use paths::{encode_url_path, is_sheet_type, mime_for, safe_relative_path};
+pub use registry::PackRegistry;
 
 pub const PACK_FORMAT: u32 = 1;
 pub const PLACEHOLDER_ID: &str = "placeholder";
@@ -25,6 +34,25 @@ pub const EXTRA_STATES: [&str; 2] = ["react", "blink"];
 pub const MAX_MANIFEST_BYTES: u64 = 256 * 1024;
 /// Max single asset size served by the protocol.
 pub const MAX_ASSET_BYTES: u64 = 16 * 1024 * 1024;
+/// Max `frameWidth` / `frameHeight`, in pixels.
+pub const MAX_FRAME_PX: u32 = 4096;
+/// Max implied sheet width/height (`frameWidth × sheetColumns`, `frameHeight × sheetRows`), in pixels.
+pub const MAX_SHEET_PX: u64 = 16_384;
+/// Max `frames` per animation (also the max `sheetColumns` / `sheetRows`).
+pub const MAX_FRAMES: u32 = 256;
+/// Max `fps` (exclusive lower bound 0).
+pub const MAX_FPS: f32 = 60.0;
+/// Max single entry of `frameDurationsMs` (entries must be ≥ 1).
+pub const MAX_FRAME_DURATION_MS: u32 = 60_000;
+/// Max pack folders scanned per source directory.
+pub const MAX_PACK_DIRS: usize = 256;
+/// Max entries in `PackInfo.errors`, and separately in `PackInfo.warnings`. A
+/// longer list keeps its first `MAX_LISTED_PROBLEMS - 1` entries and ends with
+/// a line counting the rest (`… and 12 more warnings`).
+pub const MAX_LISTED_PROBLEMS: usize = 50;
+/// Max path length (bytes) and depth accepted by `safe_relative_path`.
+pub const MAX_PATH_LEN: usize = 512;
+pub const MAX_PATH_DEPTH: usize = 16;
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -174,104 +202,9 @@ pub enum PackError {
     Invalid(String),
 }
 
-/// Parse a native `pack.json`.
-pub fn parse_manifest(json: &str) -> Result<PackManifest, PackError> {
-    let _ = json;
-    todo!("packs: parse_manifest")
-}
-
-/// Validate a parsed manifest. Errors make the pack unusable (bad id, no `idle`
-/// animation AND no other base state, zero/oversized frame sizes or counts,
-/// fps outside (0, 60], unsafe sheet paths, missing sheet files). Warnings are
-/// informational (missing optional states, unknown fallback targets, dropped
-/// palette values). `file_exists` receives sheet paths relative to the pack root.
-pub fn validate_manifest(m: &PackManifest, file_exists: &dyn Fn(&str) -> bool) -> (Vec<String>, Vec<String>) {
-    let _ = (m, file_exists);
-    todo!("packs: validate_manifest")
-}
-
-/// Resolve `key` to `(source_key, spec)`: the pack's own animation, then the
-/// pack's `fallbacks` chain, then the built-in chain (focus/paused/break/completed
-/// → `idle`; `react`, `blink`, unlock ids → none). Cycles are cut. `None` when nothing applies.
-pub fn resolve<'a>(m: &'a PackManifest, key: &str) -> Option<(String, &'a AnimationSpec)> {
-    let _ = (m, key);
-    todo!("packs: resolve")
-}
-
-/// Keys the shell resolves for the renderer (SPEC §7 "Render keys"): BASE_STATES ∪
-/// EXTRA_STATES ∪ unlock ids of kind animation|idleVariant ∪ the pack's own animation
-/// keys. Deduplicated, stable order (that listing order).
-pub fn render_keys(table: &UnlockTable, m: &PackManifest) -> Vec<String> {
-    let _ = (table, m);
-    todo!("packs: render_keys")
-}
-
-/// Normalize a pack-relative path. Rejects empty, absolute, drive-prefixed,
-/// backslash, `..`, NUL, and hidden (`.`-prefixed) components.
-pub fn safe_relative_path(p: &str) -> Option<PathBuf> {
-    let _ = p;
-    todo!("packs: safe_relative_path")
-}
-
-/// MIME type for a served asset by extension (png, webp, svg, json, gif, jpg);
-/// `None` for anything else (the protocol refuses it).
-pub fn mime_for(path: &Path) -> Option<&'static str> {
-    let _ = path;
-    todo!("packs: mime_for")
-}
-
 /// Files of the bundled placeholder pack, embedded in the binary by the shell.
 #[derive(Clone, Debug, Default)]
 pub struct BundledPack {
     /// (path relative to the pack root, bytes). Must include `pack.json`.
     pub files: Vec<(String, &'static [u8])>,
-}
-
-/// All known packs. Built once at startup and on `list_packs` refresh.
-#[derive(Debug, Default)]
-pub struct PackRegistry {
-    // Implementation-defined fields.
-    _private: (),
-}
-
-impl PackRegistry {
-    /// Discover packs: the bundled placeholder (always present, id reserved),
-    /// then every `<user_dir>/<subdir>/pack.json`, then (when given) every
-    /// `<dev_dir>/<subdir>/pack.json`; dev overrides user on id collision; packs
-    /// claiming the `placeholder` id from disk are rejected with an error entry.
-    /// A subdir with `pet.json` and no `pack.json` is converted as a Petdex pack (SPEC §7.2).
-    /// Never panics on bad input; problems become `PackInfo.errors`.
-    pub fn load(bundled: BundledPack, user_dir: Option<&Path>, dev_dir: Option<&Path>) -> Self {
-        let _ = (bundled, user_dir, dev_dir);
-        todo!("packs: PackRegistry::load")
-    }
-
-    /// All packs (valid and invalid), bundled first then by name.
-    pub fn list(&self) -> Vec<PackInfo> {
-        todo!("packs: list")
-    }
-
-    pub fn is_valid(&self, id: &str) -> bool {
-        let _ = id;
-        todo!("packs: is_valid")
-    }
-
-    /// Resolve `id` for rendering (falling back to the placeholder if `id` is
-    /// unknown or invalid, recording `fallback_from`). Resolves exactly
-    /// `render_keys(table, manifest)`; `url_prefix` is e.g. `pack://localhost/` and URLs are
-    /// `{url_prefix}{packId}/{sheet}` with each path segment percent-encoded.
-    /// Use `render_keys(table, manifest)` for `keys` (the shell does).
-    pub fn resolve_pack(&self, id: &str, table: &UnlockTable, url_prefix: &str) -> ResolvedPack {
-        let _ = (id, table, url_prefix);
-        todo!("packs: resolve_pack")
-    }
-
-    /// Bytes and MIME type of a file inside a known pack, or `None` if the pack is
-    /// unknown, the path is unsafe, escapes the pack directory (after
-    /// canonicalization, so symlinks out are refused), has a disallowed type, or
-    /// exceeds `MAX_ASSET_BYTES`.
-    pub fn read_file(&self, pack_id: &str, rel_path: &str) -> Option<(Vec<u8>, &'static str)> {
-        let _ = (pack_id, rel_path);
-        todo!("packs: read_file")
-    }
 }
