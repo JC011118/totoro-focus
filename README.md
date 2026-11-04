@@ -233,7 +233,19 @@ Reference only — this is **not** the acceptance measurement:
 - A Linux cloud container ran the release binary (7.2 MB) under Xvfb. WebKitGTK
   rendered in software, with no GPU, so the numbers overstate what a Mac will
   show.
-- Reference run after the progress-ring fix: pending (being re-measured).
+- Results, totals for the app process plus its WebKit web and network
+  processes, each averaged over 120 s after a 40 s settle:
+
+  | Scenario (Linux/Xvfb reference) | CPU (avg, all processes) | Resident memory (all processes / app) |
+  |---|---|---|
+  | Idle, companion visible | 3.9 % | 494 MB / 160 MB |
+  | Focus running, companion visible | 4.3 % | 501 MB / 161 MB |
+
+- This run found and fixed a real cost. Before the fix, the progress ring
+  re-animated every second, which kept WebKit repainting continuously: focus
+  running measured **45.6 %** in the same setup, against 4.3 % after. The
+  remaining idle cost is the 4 fps idle sprite being repainted without a GPU.
+  Reduced motion stops it.
 
 ## Verified vs pending
 
