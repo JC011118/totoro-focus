@@ -116,7 +116,7 @@ fn clock_forward_while_paused_does_not_expire() {
     let (mut h, _) = paused_after_10();
     h.clock.advance(SEC);
     h.clock.jump_wall(3 * HOUR as i64);
-    assert!(h.tick().is_empty());
+    assert_eq!(effect_names(&h.tick()), ["Persist"], "the shift is saved");
     assert!(is_paused(&h));
     h.clock.advance(119 * MIN);
     h.tick();
@@ -144,7 +144,8 @@ fn clock_back_while_paused_does_not_extend_the_pause() {
 fn clock_changed_event_while_paused_shifts_the_anchor() {
     let (mut h, paused_at) = paused_after_10();
     h.clock.jump_wall(3 * HOUR as i64);
-    assert!(h.ev(SystemEvent::ClockChanged).is_empty());
+    // The shifted anchor is saved state: Persist, nothing else.
+    assert_eq!(effect_names(&h.ev(SystemEvent::ClockChanged)), ["Persist"]);
     assert!(is_paused(&h));
     assert_eq!(
         h.engine.active().unwrap().age_anchor(),

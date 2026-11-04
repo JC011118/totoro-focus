@@ -1,6 +1,7 @@
 //! Checkpoints, quit, crash and relaunch recovery (SPEC §4.7).
 
 use chrono::TimeDelta;
+use focus_core::clock::Wall;
 use focus_core::engine::{Command, Effect, SystemEvent, Transition};
 use focus_core::history::{EndReason, HarvestItem, Outcome, SessionRecord};
 use focus_core::rewards::AwardRecord;
@@ -750,4 +751,137 @@ fn suspend_saves_the_checkpoint_for_a_crash_during_sleep() {
     let v = h.snap().session.unwrap();
     assert_eq!(v.active_ms, 10 * MIN + 5 * SEC, "the suspend save is exact");
     assert_eq!(v.pause_reason, Some(PauseReason::Suspend));
+}
+
+/// Focus 25, run 10 min, user pause, then a +3 h wall jump that `event` detects while
+/// the app runs. Returns the harness, the true pause stamp and the event's effects.
+fn paused_then_clock_jump(event: SystemEvent) -> (H, Wall, Vec<Effect>) {
+    let mut h = H::new();
+    start25(&mut h);
+    h.run(10 * MIN);
+    h.ok(Command::Pause);
+    let paused_at = h.now().wall;
+    h.clock.jump_wall(3 * HOUR as i64);
+    let fx = h.ev(event);
+    (h, paused_at, fx)
+}
+
+#[test]
+fn a_detected_clock_change_while_paused_is_saved() {
+    for event in [SystemEvent::ClockChanged, SystemEvent::Tick] {
+        let (h, paused_at, fx) = paused_then_clock_jump(event);
+        assert_eq!(effect_names(&fx), ["Persist"], "{event:?}");
+        let shifted = paused_at + TimeDelta::hours(3);
+        assert_eq!(h.engine.active().unwrap().age_anchor(), Some(shifted));
+        let cp = h.saved().active_session.as_ref().unwrap();
+        assert_eq!(cp.age_anchor, Some(shifted), "{event:?}: anchor on disk");
+        assert_eq!(cp.paused_at, Some(paused_at), "pausedAt never shifts");
+        assert_eq!(cp.pause_reason, Some(PauseReason::User));
+    }
+}
+
+#[test]
+fn crash_after_a_clock_change_while_paused_stays_paused() {
+    let (mut h, paused_at, _) = paused_then_clock_jump(SystemEvent::ClockChanged);
+    // Crash: no Quit, relaunched a second later.
+    let fx = h.relaunch(SEC, false);
+    assert!(
+        matches!(transitions(&fx)[..], [Transition::Restored { .. }]),
+        "a jump detected while the app runs never counts as pause time: {fx:?}"
+    );
+    let v = h.snap().session.unwrap();
+    assert_eq!(v.status, RunStatus::Paused);
+    assert_eq!(v.pause_reason, Some(PauseReason::User));
+    assert_eq!(v.active_ms, 10 * MIN);
+    let s = h.engine.active().unwrap();
+    assert_eq!(s.age_anchor(), Some(paused_at + TimeDelta::hours(3)));
+    assert_eq!(s.pause_age_ms(h.now().wall), Some(SEC));
+    // Expiry still comes 120 min after the shifted anchor, recorded at the true stamp.
+    h.clock.advance(120 * MIN - SEC);
+    assert!(h.tick().is_empty());
+    h.clock.advance(1);
+    let fx = h.tick();
+    match &transitions(&fx)[..] {
+        [Transition::FocusInterrupted { record, .. }] => {
+            assert_eq!(record.end_reason, EndReason::PauseExpired);
+            assert_eq!(record.ended_at, paused_at);
+            assert_eq!(record.active_ms, 10 * MIN);
+        }
+        other => panic!("expected expiry, got {other:?}"),
+    }
+}
+
+#[test]
+fn crash_during_sleep_after_a_clock_change_while_paused_stays_paused() {
+    let mut h = H::new();
+    start25(&mut h);
+    h.run(10 * MIN);
+    h.ok(Command::Pause);
+    let paused_at = h.now().wall;
+    h.clock.jump_wall(3 * HOUR as i64);
+    // Suspend arrives before any tick saw the jump; its observation shifts the anchor.
+    let fx = h.ev(SystemEvent::Suspend);
+    assert_eq!(effect_names(&fx), ["Persist"]);
+    h.sleep_mono_stopped(30 * MIN);
+    // The battery dies during sleep: no Wake, relaunched later.
+    let fx = h.relaunch(10 * MIN, false);
+    assert!(matches!(
+        transitions(&fx)[..],
+        [Transition::Restored { .. }]
+    ));
+    let s = h.engine.active().unwrap();
+    assert_eq!(s.age_anchor(), Some(paused_at + TimeDelta::hours(3)));
+    assert_eq!(
+        s.pause_age_ms(h.now().wall),
+        Some(40 * MIN),
+        "sleep and closed time count; the detected jump does not"
+    );
+}
+
+#[test]
+fn a_backward_clock_change_while_paused_is_saved() {
+    let mut h = H::new();
+    start25(&mut h);
+    h.run(10 * MIN);
+    h.ok(Command::Pause);
+    let paused_at = h.now().wall;
+    h.clock.jump_wall(-(3 * HOUR as i64));
+    let fx = h.ev(SystemEvent::ClockChanged);
+    assert_eq!(effect_names(&fx), ["Persist"]);
+    let shifted = paused_at - TimeDelta::hours(3);
+    assert_eq!(
+        h.saved().active_session.as_ref().unwrap().age_anchor,
+        Some(shifted)
+    );
+    h.clock.advance(20 * MIN);
+    assert!(h.tick().is_empty());
+    // Crash, relaunched 5 min later: 25 min of pause age, not 0.
+    h.relaunch(5 * MIN, false);
+    let s = h.engine.active().unwrap();
+    assert_eq!(s.age_anchor(), Some(shifted));
+    assert_eq!(s.pause_age_ms(h.now().wall), Some(25 * MIN));
+}
+
+#[test]
+fn skew_within_tolerance_while_paused_saves_nothing() {
+    let mut h = H::new();
+    start25(&mut h);
+    h.run(10 * MIN);
+    h.ok(Command::Pause);
+    let saves = h.saves;
+    h.clock.jump_wall(60 * SEC as i64);
+    assert!(h.ev(SystemEvent::ClockChanged).is_empty());
+    h.clock.jump_wall(-(60 * SEC as i64));
+    assert!(h.tick().is_empty());
+    assert_eq!(h.saves, saves);
+}
+
+#[test]
+fn a_paused_clock_change_save_does_not_bump_the_revision() {
+    let (h, _, _) = paused_then_clock_jump(SystemEvent::ClockChanged);
+    let mut g = H::new();
+    start25(&mut g);
+    g.run(10 * MIN);
+    g.ok(Command::Pause);
+    assert_eq!(h.engine.revision(), g.engine.revision());
 }

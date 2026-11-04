@@ -777,7 +777,15 @@ impl Engine {
                     let skew = skew_ms(b, now);
                     if skew.unsigned_abs() > self.cfg.clock_jump_tolerance_ms {
                         if let Some(s) = self.active.as_mut() {
+                            let before = s.age_anchor();
                             s.shift_age_anchor(skew);
+                            // The anchor is saved state (§4.7: every state change emits
+                            // Persist), so a crash keeps the shift and the detected jump
+                            // never counts as pause time (§4.6). Not observable: no
+                            // revision bump.
+                            if s.age_anchor() != before {
+                                fx.persist = true;
+                            }
                         }
                     }
                 }

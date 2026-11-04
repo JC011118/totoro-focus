@@ -6,8 +6,10 @@
 //! the way the shell applies them — `Persist` stores `engine.persisted_state(now)`
 //! (same `now`) into `last_saved` and then calls `mark_persisted(now)`;
 //! Show/HideCompanion and ActivityChanged update `companion_visible` / `activity`.
-//! `relaunch` builds a new engine from `last_saved` (round-tripped through JSON, as on
-//! disk) with a new fake clock, which is how quit, crash and restore are tested.
+//! `last_saved` starts as the state the harness was created from (what was loaded from
+//! disk) until the first applied `Persist` replaces it. `relaunch` builds a new engine
+//! from `last_saved` (round-tripped through JSON, as on disk) with a new fake clock,
+//! which is how quit, crash and restore are tested.
 //!
 //! **Engine tests must tick at least every 60 s of fake time while a session runs**
 //! (use [`H::run`] or [`H::run_step`]); a single long `advance` is an observation gap
@@ -95,7 +97,9 @@ pub fn persist_count(fx: &[Effect]) -> usize {
 pub struct H {
     pub engine: Engine,
     pub clock: Arc<FakeClock>,
-    /// State as of the last applied `Persist` — what a crash would leave on disk.
+    /// What a crash would leave on disk: the state as of the last applied `Persist`, or
+    /// the state the harness was created from if nothing was saved since. Only `None`
+    /// if a test clears it (then `relaunch` starts from defaults, like a missing file).
     pub last_saved: Option<PersistedState>,
     /// Every effect applied since creation or the last relaunch / [`H::take_fx`].
     pub fx: Vec<Effect>,
@@ -154,6 +158,8 @@ impl H {
         let clock = Arc::new(clock);
         let ids = Arc::new(AtomicU64::new(0));
         let now = clock.now();
+        // The loaded state is what is on disk until the first applied Persist.
+        let on_disk = state.clone();
         let (engine, launch_fx) = Engine::new_with_clock(
             cfg.clone(),
             table.clone(),
@@ -165,7 +171,7 @@ impl H {
         let mut h = H {
             engine,
             clock,
-            last_saved: None,
+            last_saved: Some(on_disk),
             fx: Vec::new(),
             launch_fx: launch_fx.clone(),
             saving: true,
@@ -266,13 +272,14 @@ impl H {
         std::mem::take(&mut self.fx)
     }
 
-    /// The last saved state; panics if nothing was saved.
+    /// The state on disk (see [`H::last_saved`]); panics if a test cleared it.
     pub fn saved(&self) -> &PersistedState {
-        self.last_saved.as_ref().expect("nothing was saved")
+        self.last_saved.as_ref().expect("nothing is on disk")
     }
 
-    /// End this "process" and start a new one from `last_saved` (or defaults if nothing
-    /// was saved), as after a quit or a crash. The new fake clock's wall is `closed_ms`
+    /// End this "process" and start a new one from `last_saved` (the state on disk:
+    /// the last save, else the state the harness was created from; defaults if a test
+    /// cleared it), as after a quit or a crash. The new fake clock's wall is `closed_ms`
     /// later. With `mono_counts_sleep` its monotonic clock continues from the old value
     /// plus `closed_ms`; otherwise it restarts at the default origin (a new process). The
     /// saved state is round-tripped through JSON. Returns `Engine::new`'s effects.

@@ -8,6 +8,8 @@
 //! - phase, session and awaiting agree; no paused session has already reached planned;
 //! - `Err` leaves the engine unchanged; effects are ordered with at most one Persist;
 //! - ActivityChanged tracks what is running; revision never decreases;
+//! - every state change is saved: the state on disk equals the engine's, except a
+//!   running session's active time (checkpoint cadence);
 //! - a crash loses at most one checkpoint interval of active time.
 
 use std::collections::HashMap;
@@ -63,12 +65,33 @@ struct Track {
     steps: u64,
 }
 
+/// Every state change emits Persist (SPEC §4.7): what is on disk equals the engine's
+/// state, except the checkpoint stamp and a running session's active time (saved on
+/// the checkpoint cadence).
+fn check_disk(h: &H) {
+    let disk = h.saved();
+    let mut live = h.engine.persisted_state(h.now());
+    match (&disk.active_session, &mut live.active_session) {
+        (Some(d), Some(l)) => {
+            l.checkpoint_at = d.checkpoint_at;
+            if h.engine.active().is_some_and(|s| s.is_running()) {
+                assert!(d.accrued_ms <= l.accrued_ms, "saved {d:?}, live {l:?}");
+                l.accrued_ms = d.accrued_ms;
+            }
+        }
+        (None, None) => {}
+        (d, l) => panic!("session on disk {d:?}, live {l:?}"),
+    }
+    assert_eq!(disk, &live, "a state change was not saved");
+}
+
 fn check_call(h: &H, fx: &[Effect], t: &mut Track) {
     assert!(
         fx.windows(2).all(|w| rank(&w[0]) <= rank(&w[1])),
         "order: {fx:?}"
     );
     assert!(fx.iter().filter(|e| matches!(e, Effect::Persist)).count() <= 1);
+    check_disk(h);
     for tr in transitions(fx) {
         match tr {
             Transition::FocusStarted { session_id, .. }
@@ -336,6 +359,7 @@ fn walk(seed: u64, steps: u64) -> Track {
                     rng.below(4 * HOUR)
                 };
                 h.relaunch(closed, rng.chance(50));
+                check_disk(&h);
                 if let (Some((id, old)), Some(v)) = (before, h.snap().session) {
                     if v.id == id {
                         assert!(v.active_ms <= old);
