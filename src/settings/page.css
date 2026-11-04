@@ -1,0 +1,10 @@
+/* settings.html only: the settings app fills the window. */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
+}

@@ -1,0 +1,10 @@
+/* companion.html only: the window is transparent; the card draws its own
+   background and rounded corners. */
+html,
+body,
+#root {
+  width: 240px;
+  height: 200px;
+  overflow: hidden;
+  background: transparent;
+}
