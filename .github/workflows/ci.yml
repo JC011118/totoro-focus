@@ -1,0 +1,116 @@
+# CI for Totoro Focus. MANUAL ONLY, and the macOS build is UNSIGNED.
+#
+# - Trigger: `workflow_dispatch` only (Actions tab → "CI (manual)" → Run workflow,
+#   or `gh workflow run ci.yml`). There are deliberately no push, pull_request or
+#   schedule triggers, so this never spends the owner's Actions minutes unasked.
+#   macOS runner minutes are billed at a multiple of Linux minutes.
+# - The macOS job builds an UNSIGNED, un-notarized .app for local testing only
+#   (no Developer ID signature; Gatekeeper will warn). Signing and notarization
+#   are release work that needs the owner's Apple Developer account; nothing here
+#   uses secrets or produces a signed installer.
+# - CI proves the code builds and the automated tests pass. It does not verify
+#   window focus, sleep/wake, sound or menu-bar behavior; those stay on the manual
+#   macOS checklist.
+
+name: CI (manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux — npm run check
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+
+      - name: Install Rust (stable, with rustfmt and clippy)
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # typecheck + lint + vitest + vite build + cargo fmt/clippy/test (see package.json).
+      - run: npm run check
+
+  macos:
+    name: macOS — tests and unsigned .app
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: cargo test --workspace
+
+      # Unsigned: no signing identity or Apple credentials are configured.
+      - name: Build the .app bundle (unsigned)
+        run: npm run app:build -- --bundles app
+
+      # Zip with ditto so the executable bit, symlinks and resource forks inside
+      # the bundle survive the artifact upload (upload-artifact drops permissions).
+      - name: Package the .app
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apps=(target/release/bundle/macos/*.app src-tauri/target/release/bundle/macos/*.app)
+          if [ "${#apps[@]}" -ne 1 ]; then
+            echo "Expected exactly one .app bundle, found ${#apps[@]}: ${apps[*]-}" >&2
+            exit 1
+          fi
+          zip="$RUNNER_TEMP/totoro-focus-macos-unsigned.zip"
+          ditto -c -k --sequesterRsrc --keepParent "${apps[0]}" "$zip"
+          echo "zip=$zip" >> "$GITHUB_OUTPUT"
+          echo "Packaged ${apps[0]} → $zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: totoro-focus-macos-app-unsigned
+          path: ${{ steps.package.outputs.zip }}
+          if-no-files-found: error
+          retention-days: 7
