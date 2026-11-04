@@ -68,8 +68,57 @@ impl UnlockTable {
     /// thresholds non-decreasing in list order; first entry has 0 points;
     /// completion bonus and per-minute points are sane (≤ 1000).
     pub fn parse(json: &str) -> Result<Self, String> {
-        let _ = json;
-        todo!("rewards: UnlockTable::parse")
+        let table: UnlockTable = serde_json::from_str(json)
+            .map_err(|e| format!("unlock table is not valid JSON: {e}"))?;
+        table.validate()?;
+        Ok(table)
+    }
+
+    /// The validation `parse` applies (also usable on a table built in code).
+    pub fn validate(&self) -> Result<(), String> {
+        if self.format != 1 {
+            return Err(format!("unsupported unlock table format {}", self.format));
+        }
+        if self.rules.points_per_active_minute > MAX_RULE_POINTS {
+            return Err(format!(
+                "pointsPerActiveMinute {} exceeds {MAX_RULE_POINTS}",
+                self.rules.points_per_active_minute
+            ));
+        }
+        if self.rules.completion_bonus > MAX_RULE_POINTS {
+            return Err(format!(
+                "completionBonus {} exceeds {MAX_RULE_POINTS}",
+                self.rules.completion_bonus
+            ));
+        }
+        let first = self
+            .unlocks
+            .first()
+            .ok_or_else(|| "unlock table has no entries".to_string())?;
+        if first.points != 0 {
+            return Err(format!(
+                "the first unlock ({}) must have 0 points, not {}",
+                first.id, first.points
+            ));
+        }
+        let mut seen = BTreeSet::new();
+        let mut previous = 0u64;
+        for u in &self.unlocks {
+            if !is_valid_unlock_id(&u.id) {
+                return Err(format!("invalid unlock id {:?}", u.id));
+            }
+            if !seen.insert(u.id.as_str()) {
+                return Err(format!("duplicate unlock id {:?}", u.id));
+            }
+            if u.points < previous {
+                return Err(format!(
+                    "unlock {} has {} points, below the previous threshold {previous}",
+                    u.id, u.points
+                ));
+            }
+            previous = u.points;
+        }
+        Ok(())
     }
 
     pub fn get(&self, id: &str) -> Option<&UnlockDef> {
@@ -78,14 +127,21 @@ impl UnlockTable {
 
     /// Ids whose threshold is `<= points`.
     pub fn ids_at(&self, points: u64) -> Vec<String> {
-        let _ = points;
-        todo!("rewards: ids_at")
+        self.unlocks
+            .iter()
+            .filter(|u| u.points <= points)
+            .map(|u| u.id.clone())
+            .collect()
     }
 
     /// The first unlock with a threshold above `points`.
     pub fn next_after(&self, points: u64) -> Option<&UnlockDef> {
-        let _ = points;
-        todo!("rewards: next_after")
+        self.unlocks.iter().find(|u| u.points > points)
+    }
+
+    /// True if `id` is in the table with the given kind.
+    pub fn is_kind(&self, id: &str, kind: UnlockKind) -> bool {
+        self.get(id).is_some_and(|u| u.kind == kind)
     }
 }
 
@@ -122,8 +178,21 @@ pub struct Friendship {
 
 /// Whole active minutes times the per-minute rate.
 pub fn minute_points(active_ms: u64, rules: &Rules) -> u64 {
-    let _ = (active_ms, rules);
-    todo!("rewards: minute_points")
+    (active_ms / 60_000).saturating_mul(rules.points_per_active_minute)
+}
+
+/// Upper bound for `pointsPerActiveMinute` and `completionBonus`.
+pub const MAX_RULE_POINTS: u64 = 1000;
+
+/// Unlock ids: `^[a-z0-9][a-z0-9_]{0,63}$`.
+pub fn is_valid_unlock_id(id: &str) -> bool {
+    let bytes = id.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 64
+        && (bytes[0].is_ascii_lowercase() || bytes[0].is_ascii_digit())
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_')
 }
 
 impl Friendship {
@@ -139,14 +208,60 @@ impl Friendship {
         table: &UnlockTable,
         at: Wall,
     ) -> Option<AwardOutcome> {
-        let _ = (session_id, active_ms, completed, table, at);
-        todo!("rewards: award")
+        if self.awards.contains_key(session_id) {
+            return None;
+        }
+        let points = minute_points(active_ms, &table.rules);
+        let bonus = if completed {
+            table.rules.completion_bonus
+        } else {
+            0
+        };
+        self.awards.insert(
+            session_id.to_string(),
+            AwardRecord {
+                points,
+                bonus,
+                completed,
+                awarded_at: at,
+            },
+        );
+        self.total_points = self
+            .total_points
+            .saturating_add(points)
+            .saturating_add(bonus);
+        let newly_unlocked = self.union_reached(table);
+        Some(AwardOutcome {
+            session_id: session_id.to_string(),
+            points,
+            bonus,
+            total_points: self.total_points,
+            newly_unlocked,
+        })
+    }
+
+    /// Sum of every award record (points plus bonus).
+    pub fn awarded_sum(&self) -> u64 {
+        self.awards.values().fold(0u64, |acc, a| {
+            acc.saturating_add(a.points).saturating_add(a.bonus)
+        })
+    }
+
+    /// Add every id whose threshold is reached; returns the added ids in table order.
+    fn union_reached(&mut self, table: &UnlockTable) -> Vec<String> {
+        let mut added = Vec::new();
+        for id in table.ids_at(self.total_points) {
+            if self.unlocked.insert(id.clone()) {
+                added.push(id);
+            }
+        }
+        added
     }
 
     /// Repair invariants after load: `total_points = max(stored, sum of awards)`;
     /// `unlocked ∪= thresholds <= total`. Never removes anything. Returns ids added.
     pub fn reconcile(&mut self, table: &UnlockTable) -> Vec<String> {
-        let _ = table;
-        todo!("rewards: reconcile")
+        self.total_points = self.total_points.max(self.awarded_sum());
+        self.union_reached(table)
     }
 }
