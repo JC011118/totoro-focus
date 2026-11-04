@@ -84,12 +84,19 @@ export function useSnapshotCommand(): (call: Promise<Snapshot>) => Promise<Snaps
 }
 
 /** Subscribes to a backend event for the component's lifetime. */
+/**
+ * Subscribe to a backend event. `onReady` runs once the listener is registered,
+ * which is where subscribe-then-fetch work belongs (fetching earlier can miss an
+ * event that arrives between the fetch and the subscription).
+ */
 export function useBackendEvent<K extends BackendEventName>(
   name: K,
   handler: (payload: BackendEvents[K]) => void,
+  onReady?: () => void,
 ): void {
   const backend = useBackend();
   const onEvent = useEffectEvent(handler);
+  const ready = useEffectEvent(() => onReady?.());
   useEffect(() => {
     let active = true;
     let unlisten: Unlisten | null = null;
@@ -99,10 +106,17 @@ export function useBackendEvent<K extends BackendEventName>(
       })
       .then(
         (u) => {
-          if (active) unlisten = u;
-          else u();
+          if (!active) {
+            u();
+            return;
+          }
+          unlisten = u;
+          ready();
         },
-        (e: unknown) => console.warn(`[focus] could not listen for ${name}`, e),
+        (e: unknown) => {
+          console.warn(`[focus] could not listen for ${name}`, e);
+          if (active) ready();
+        },
       );
     return () => {
       active = false;

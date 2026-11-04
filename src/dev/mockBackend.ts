@@ -439,6 +439,10 @@ export class MockBackend implements Backend {
     });
   }
 
+  takeSettingsTab(): Promise<SettingsTab | null> {
+    return Promise.resolve(null);
+  }
+
   quitApp(): Promise<void> {
     console.info("[dev mock] quit requested");
     return Promise.resolve();

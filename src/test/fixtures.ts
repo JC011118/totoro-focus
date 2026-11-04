@@ -2,6 +2,7 @@
 // fake Backend. Tests never import the dev mock or @tauri-apps/api.
 
 import { vi } from "vitest";
+import type { SettingsTab } from "../ipc/bindings/SettingsTab";
 import type { Backend, BackendEventName, BackendEvents, Unlisten } from "../ipc/backend";
 import type { AppInfo } from "../ipc/bindings/AppInfo";
 import type { ResolvedAnimation } from "../ipc/bindings/ResolvedAnimation";
@@ -194,6 +195,7 @@ export class FakeBackend implements Backend {
   resetCompanionPosition = vi.fn(async () => {});
   openSettings = vi.fn(async () => {});
   getAppInfo = vi.fn(async () => APP_INFO);
+  takeSettingsTab = vi.fn(async (): Promise<SettingsTab | null> => null);
   quitApp = vi.fn(async () => {});
 
   on<K extends BackendEventName>(event: K, cb: (payload: BackendEvents[K]) => void): Promise<Unlisten> {

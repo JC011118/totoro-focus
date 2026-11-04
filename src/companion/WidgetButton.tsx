@@ -59,6 +59,8 @@ const HOLD_REPEAT_MS = 110;
 
 /**
  * A button that steps once on press and repeats while held (stepper − / +).
+ * `onStep(repeat)` gets `false` for the initial press or a click and `true` for
+ * hold repeats, so callers can step finely per click and coarsely while held.
  * Pointer-driven, so it works in a non-key panel; click still works for
  * assistive technology.
  */
@@ -70,7 +72,7 @@ export function HoldButton({
 }: {
   icon: GlyphName;
   label: string;
-  onStep: () => void;
+  onStep: (repeat: boolean) => void;
   disabled?: boolean;
 }) {
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -83,7 +85,7 @@ export function HoldButton({
   useEffect(() => stop, []);
 
   const repeat = () => {
-    onStep();
+    onStep(true);
     timer.current = setTimeout(repeat, HOLD_REPEAT_MS);
   };
 
@@ -97,7 +99,7 @@ export function HoldButton({
       onPointerDown={(e) => {
         if (e.button !== 0 || disabled) return;
         pressed.current = true;
-        onStep();
+        onStep(false);
         stop();
         timer.current = setTimeout(repeat, HOLD_DELAY_MS);
       }}
@@ -107,7 +109,7 @@ export function HoldButton({
       onClick={() => {
         // Pointer presses already stepped; keyboard / AT activation steps here.
         if (pressed.current) pressed.current = false;
-        else onStep();
+        else onStep(false);
       }}
     >
       <Glyph name={icon} size={12} />

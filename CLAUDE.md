@@ -24,8 +24,10 @@ behavior; update it in the same change when behavior changes.
 - Tauri 2 (`tauri` 2.12.5, `@tauri-apps/cli` 2.12.4) + React 19 + TypeScript,
   authoritative timer in Rust (`crates/focus-core`).
 - Companion window = non-activating `NSPanel` via `tauri-nspanel` 2.1.1
-  (`canBecomeKeyWindow` false except while the task-label field is edited;
-  `acceptFirstMouse` on). `FOCUS_WINDOW_MODE=native` runs a plain
+  (`canBecomeKeyWindow`/`canBecomeMainWindow` always false, `canHide` false,
+  `acceptFirstMouse` on). The companion has no text, number or select inputs —
+  only `tabIndex=-1` buttons (SPEC §8.1 rule 7); the task label and typed
+  minutes live in Settings → Start. `FOCUS_WINDOW_MODE=native` runs a plain
   always-on-top Tauri window instead, for spike comparison.
 - **Spike status: built, NOT yet verified on a Mac.** Development so far has
   happened in a Linux cloud container, where macOS code is only type-checked

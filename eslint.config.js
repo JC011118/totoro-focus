@@ -23,6 +23,7 @@ const timingRules = {
   "no-restricted-globals": [
     "error",
     { name: "setInterval", message: TIME_MESSAGE },
+    { name: "requestAnimationFrame", message: TIME_MESSAGE },
   ],
   "no-restricted-properties": [
     "error",
@@ -31,11 +32,24 @@ const timingRules = {
     { object: "window", property: "setInterval", message: TIME_MESSAGE },
     { object: "globalThis", property: "setInterval", message: TIME_MESSAGE },
     { object: "self", property: "setInterval", message: TIME_MESSAGE },
+    { object: "window", property: "requestAnimationFrame", message: TIME_MESSAGE },
+    { object: "globalThis", property: "requestAnimationFrame", message: TIME_MESSAGE },
+    { object: "self", property: "requestAnimationFrame", message: TIME_MESSAGE },
   ],
   "no-restricted-syntax": [
     "error",
     { selector: "NewExpression[callee.name='Date'][arguments.length=0]", message: TIME_MESSAGE },
     { selector: "CallExpression[callee.name='Date']", message: TIME_MESSAGE },
+    // window.Date / globalThis.Date / self.Date: new X.Date(), X.Date(), X.Date.now
+    {
+      selector: "NewExpression[callee.type='MemberExpression'][callee.property.name='Date'][arguments.length=0]",
+      message: TIME_MESSAGE,
+    },
+    { selector: "CallExpression[callee.type='MemberExpression'][callee.property.name='Date']", message: TIME_MESSAGE },
+    {
+      selector: "MemberExpression[property.name='now'][object.type='MemberExpression'][object.property.name='Date']",
+      message: TIME_MESSAGE,
+    },
     {
       selector: "MemberExpression[property.name='now'][object.type='MemberExpression'][object.property.name='performance']",
       message: TIME_MESSAGE,

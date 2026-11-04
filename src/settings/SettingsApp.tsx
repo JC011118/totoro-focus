@@ -5,7 +5,7 @@
 import { useState } from "react";
 import type { SettingsTab } from "../ipc/bindings/SettingsTab";
 import { DEFAULT_LIMITS } from "../format/minutes";
-import { useActivePack, useAppInfo, useBackendEvent, useSnapshot } from "../state/BackendContext";
+import { useActivePack, useAppInfo, useBackend, useBackendEvent, useSnapshot } from "../state/BackendContext";
 import { useEffectiveReducedMotion } from "../state/useReducedMotion";
 import { useTheme } from "../theme/useTheme";
 import { Glyph, type GlyphName } from "../ui/glyphs";
@@ -40,7 +40,21 @@ export function SettingsApp({ initialTab, syncHash = true }: { initialTab?: Sett
       }
     }
   };
-  useBackendEvent("openTab", (e) => setTab(e.tab));
+  const backend = useBackend();
+  // A request made while this page was still loading has no listener yet; the
+  // shell keeps the last requested tab, collected once the listener is live.
+  useBackendEvent(
+    "openTab",
+    (e) => setTab(e.tab),
+    () => {
+      backend.takeSettingsTab().then(
+        (t) => {
+          if (t) setTab(t);
+        },
+        () => {},
+      );
+    },
+  );
 
   const limits = appInfo?.limits ?? DEFAULT_LIMITS;
   return (

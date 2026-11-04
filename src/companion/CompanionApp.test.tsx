@@ -62,17 +62,17 @@ describe("CompanionApp", () => {
     fireEvent.click(button("Custom length"));
     expect(screen.getByText("Custom")).toBeTruthy();
     const more = button("More minutes");
-    fireEvent.click(more); // 25 → 30
-    fireEvent.click(more); // 30 → 35
-    fireEvent.click(button("Start 35"));
+    fireEvent.click(more); // a single click steps exactly 1 minute: 25 → 26
+    fireEvent.click(more); // 26 → 27
+    fireEvent.click(button("Start 27"));
     await act(flush);
-    expect(backend.startFocus).toHaveBeenCalledWith({ minutes: 35 });
+    expect(backend.startFocus).toHaveBeenCalledWith({ minutes: 27 });
     expect(screen.queryByText("Custom")).toBeNull(); // starting closes the stepper
 
     act(() => backend.emit("openPicker", null));
     expect(screen.getByText("Custom")).toBeTruthy();
-    fireEvent.click(button("Fewer minutes")); // 25 → 20
-    expect(button("Start 20")).toBeTruthy();
+    fireEvent.click(button("Fewer minutes")); // 25 → 24
+    expect(button("Start 24")).toBeTruthy();
     fireEvent.click(button("Back"));
     expect(screen.queryByText("Custom")).toBeNull();
   });

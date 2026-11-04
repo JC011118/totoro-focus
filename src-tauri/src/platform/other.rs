@@ -24,6 +24,9 @@ pub fn play_chime(_app: &AppHandle) {
 
 pub fn style_tray(_tray: &TrayIcon) {}
 
+/// App-level hide is a macOS concept.
+pub fn exempt_from_app_hide(_window: &WebviewWindow) {}
+
 /// Panel mode is never selected off macOS (`WindowMode::Other`).
 pub fn make_panel(_window: &WebviewWindow) -> tauri::Result<()> {
     log::warn!("panel mode requested on a non-macOS build; using a plain window");

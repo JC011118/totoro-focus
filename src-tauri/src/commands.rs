@@ -141,6 +141,14 @@ pub fn open_settings(app: AppHandle, tab: Option<SettingsTab>) {
     actions::open_settings(&app, tab.unwrap_or_default());
 }
 
+/// The tab most recently requested by `open_settings` (then cleared). The
+/// settings page calls this once its `focus://open-tab` listener is live, so a
+/// request made while the page was still loading is not lost.
+#[tauri::command]
+pub fn take_settings_tab() -> Option<SettingsTab> {
+    crate::settings_window::take_requested_tab()
+}
+
 #[tauri::command]
 pub fn get_app_info(app: AppHandle) -> AppInfo {
     actions::app_info(&app)

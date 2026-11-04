@@ -19,6 +19,22 @@ use crate::{pack_protocol, platform, ticker, tray};
 
 pub fn run(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let dirs = resolve_dirs(app)?;
+    // Backstop for the single-instance plugin, whose socket check can race when two
+    // processes start at the same moment: an exclusive advisory lock on
+    // `<data>/state.lock`, held for the life of the process, taken before anything
+    // reads or writes state.json. A second process exits quietly.
+    match crate::instance_lock::acquire(&dirs.data) {
+        Ok(lock) => {
+            app.manage(lock);
+        }
+        Err(crate::instance_lock::LockError::Held) => {
+            log::warn!("another instance holds state.lock; exiting");
+            std::process::exit(0);
+        }
+        Err(crate::instance_lock::LockError::Io(e)) => {
+            log::warn!("could not take state.lock ({e}); continuing without it");
+        }
+    }
     if let Err(e) = std::fs::create_dir_all(&dirs.user_packs) {
         log::warn!("could not create {}: {e}", dirs.user_packs.display());
     }
@@ -85,15 +101,18 @@ fn resolve_dirs(app: &AppHandle) -> tauri::Result<Dirs> {
     })
 }
 
-/// Debug builds only: the repo's gitignored `packs-local/`.
+/// Debug builds only: the repo's gitignored `packs-local/`. Always passed (even
+/// if it does not exist yet) so Rescan finds a folder created after launch; a
+/// missing folder is ignored by the registry.
 fn dev_packs_dir() -> Option<PathBuf> {
     if !cfg!(debug_assertions) {
         return None;
     }
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("packs-local");
-    dir.is_dir().then_some(dir)
+    Some(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("packs-local"),
+    )
 }
 
 fn log_load_note(note: &LoadNote) {

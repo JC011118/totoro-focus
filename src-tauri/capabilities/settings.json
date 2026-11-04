@@ -24,6 +24,7 @@
     "allow-replay-animation",
     "allow-show-companion",
     "allow-hide-companion",
+    "allow-take-settings-tab",
     "allow-get-app-info",
     "allow-quit-app",
     "allow-set-hotkey-capture",

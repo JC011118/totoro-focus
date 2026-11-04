@@ -270,6 +270,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     if mode == WindowMode::Panel {
         platform::make_panel(&window)?;
     }
+    platform::exempt_from_app_hide(&window);
     log::info!("companion created ({} mode)", mode.as_str());
     Ok(())
 }

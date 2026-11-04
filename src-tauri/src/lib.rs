@@ -15,6 +15,7 @@ mod commands;
 mod companion;
 mod effects;
 mod hotkey;
+mod instance_lock;
 mod pack_protocol;
 #[cfg(target_os = "macos")]
 mod panel;
@@ -30,7 +31,7 @@ use tauri::{RunEvent, Wry};
 
 /// Every IPC command, in the order of `build.rs` and `generate_handler!` (kept
 /// in sync by a test).
-pub const COMMANDS: [&str; 21] = [
+pub const COMMANDS: [&str; 22] = [
     "get_snapshot",
     "start_focus",
     "start_break",
@@ -50,6 +51,7 @@ pub const COMMANDS: [&str; 21] = [
     "open_settings",
     "set_hotkey_capture",
     "reset_companion_position",
+    "take_settings_tab",
     "get_app_info",
     "quit_app",
 ];
@@ -108,6 +110,7 @@ pub fn run() {
             commands::open_settings,
             commands::set_hotkey_capture,
             commands::reset_companion_position,
+            commands::take_settings_tab,
             commands::get_app_info,
             commands::quit_app,
         ]);

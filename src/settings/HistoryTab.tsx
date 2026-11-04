@@ -2,7 +2,7 @@
 // stays neutral. Refetches on mount and on focusCompleted / focusInterrupted
 // (SPEC §10).
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { HarvestRow } from "../harvest/HarvestRow";
 import { AcornIcon, LeafIcon } from "../harvest/icons";
 import type { SessionRecord } from "../ipc/bindings/SessionRecord";
@@ -30,12 +30,15 @@ export function HistoryTab({ snapshot }: { snapshot: Snapshot }) {
     );
   }, [backend]);
 
-  useEffect(() => {
-    refetch();
-  }, [refetch]);
-  useBackendEvent("transition", (t) => {
-    if (t.type === "focusCompleted" || t.type === "focusInterrupted") refetch();
-  });
+  // Subscribe first, then fetch once the listener is live, so a completion that
+  // lands in between is never missed.
+  useBackendEvent(
+    "transition",
+    (t) => {
+      if (t.type === "focusCompleted" || t.type === "focusInterrupted") refetch();
+    },
+    refetch,
+  );
 
   const today = snapshot.today;
   const { completed, interrupted } = countHarvest(today.harvest);

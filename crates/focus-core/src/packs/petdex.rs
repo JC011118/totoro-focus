@@ -169,8 +169,8 @@ pub fn rows_for_dims(w: u32, h: u32) -> Result<u32, String> {
     };
     let fits = w > 0
         && h > 0
-        && w % PETDEX_COLUMNS == 0
-        && h % rows == 0
+        && w.is_multiple_of(PETDEX_COLUMNS)
+        && h.is_multiple_of(rows)
         && u64::from(w / PETDEX_COLUMNS) * u64::from(PETDEX_CELL_HEIGHT)
             == u64::from(h / rows) * u64::from(PETDEX_CELL_WIDTH);
     if fits {

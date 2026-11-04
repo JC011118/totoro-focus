@@ -51,6 +51,7 @@ export function createTauriBackend(): Backend {
     resetCompanionPosition: () => call<void>("reset_companion_position"),
     openSettings: (tab?: SettingsTab) => call<void>("open_settings", defined({ tab })),
     getAppInfo: () => call<AppInfo>("get_app_info"),
+    takeSettingsTab: () => call<SettingsTab | null>("take_settings_tab"),
     quitApp: () => call<void>("quit_app"),
     on: <K extends BackendEventName>(event: K, cb: (payload: BackendEvents[K]) => void) =>
       // Global listener (target Any). Each window subscribes only to the events

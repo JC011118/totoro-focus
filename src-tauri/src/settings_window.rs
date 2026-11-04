@@ -4,12 +4,31 @@
 //! `focus://open-tab` is emitted only when the window already exists; a new
 //! window reads its initial tab from `location.hash`.
 
+use std::sync::{Mutex, PoisonError};
+
 use focus_core::events::{self, OpenTabEvent, SettingsTab, SETTINGS_WINDOW};
 use tauri::{
     AppHandle, Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
 
 use crate::hotkey;
+
+/// The most recent tab requested by `open`. An `open-tab` event emitted while the
+/// settings page is still loading has no listener yet, so the renderer also
+/// collects this with `take_settings_tab` once its listener is registered.
+static REQUESTED_TAB: Mutex<Option<SettingsTab>> = Mutex::new(None);
+
+fn set_requested_tab(tab: Option<SettingsTab>) {
+    *REQUESTED_TAB.lock().unwrap_or_else(PoisonError::into_inner) = tab;
+}
+
+/// Take (and clear) the most recently requested tab.
+pub fn take_requested_tab() -> Option<SettingsTab> {
+    REQUESTED_TAB
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+}
 
 pub const SIZE: (f64, f64) = (560.0, 640.0);
 pub const MIN_SIZE: (f64, f64) = (460.0, 480.0);
@@ -24,6 +43,7 @@ pub fn title(app_name: &str) -> String {
 
 /// Open (or focus) the settings window on `tab`.
 pub fn open(app: &AppHandle, tab: SettingsTab) {
+    set_requested_tab(Some(tab));
     if let Some(window) = app.get_webview_window(SETTINGS_WINDOW) {
         focus_existing(app, &window, tab);
         return;
@@ -65,6 +85,7 @@ fn create(app: &AppHandle, tab: SettingsTab) {
             let handle = app.clone();
             window.on_window_event(move |event| {
                 if matches!(event, WindowEvent::Destroyed) {
+                    set_requested_tab(None);
                     // Closing settings ends a hotkey recording (restores the binding).
                     hotkey::end_capture(&handle);
                 }
@@ -92,6 +113,13 @@ mod tests {
         assert_eq!(url(SettingsTab::History), "settings.html#history");
         assert_eq!(url(SettingsTab::Companion), "settings.html#companion");
         assert_eq!(url(SettingsTab::default()), "settings.html#general");
+    }
+
+    #[test]
+    fn requested_tab_is_taken_once() {
+        set_requested_tab(Some(SettingsTab::History));
+        assert_eq!(take_requested_tab(), Some(SettingsTab::History));
+        assert_eq!(take_requested_tab(), None);
     }
 
     #[test]

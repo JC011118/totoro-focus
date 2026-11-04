@@ -129,7 +129,7 @@ fn check_state(h: &H, t: &mut Track, same_process: bool) {
     assert!(records.len() >= t.history.len());
     // Append-only: the known prefix is unchanged (checked fully every 64 steps, else its tail).
     let known = t.history.len();
-    if t.steps % 64 == 0 {
+    if t.steps.is_multiple_of(64) {
         assert_eq!(&records[..known], &t.history[..], "history is append-only");
     } else if known > 0 {
         assert_eq!(

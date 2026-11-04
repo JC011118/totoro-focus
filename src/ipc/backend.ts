@@ -75,6 +75,8 @@ export interface Backend {
   resetCompanionPosition(): Promise<void>;
   /** Companion only. */
   openSettings(tab?: SettingsTab): Promise<void>;
+  /** Settings window only. The last tab requested by openSettings (then cleared). */
+  takeSettingsTab(): Promise<SettingsTab | null>;
   getAppInfo(): Promise<AppInfo>;
   /** Settings window only. */
   quitApp(): Promise<void>;

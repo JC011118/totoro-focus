@@ -480,7 +480,7 @@
   display: flex;
   align-items: center;
   min-width: 0;
-  padding: 0 11px;
+  padding: 0 8px;
   border-top: 1px solid var(--c-line);
   background: var(--c-surface-raised);
 }
@@ -488,7 +488,7 @@
 .harvest {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
   overflow: hidden;
 }
@@ -501,7 +501,7 @@
 
 .harvest__more {
   flex: none;
-  margin-left: 3px;
+  margin-left: 2px;
   padding: 1px 5px;
   border-radius: 999px;
   background: var(--c-surface);

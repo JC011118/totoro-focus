@@ -55,6 +55,24 @@ pub fn make_panel(window: &WebviewWindow) -> tauri::Result<()> {
     Ok(())
 }
 
+/// App-level Hide (Cmd+H while Settings is focused, "Hide Others") must not take
+/// the companion off screen: only its own hide control or the tray hides it, so
+/// the tray label always matches what is visible (SPEC §8.1 rule 3). Works for
+/// the panel (same NSWindow object after class conversion) and native mode.
+/// Main thread (setup).
+pub fn exempt_from_app_hide(window: &WebviewWindow) {
+    match window.ns_window() {
+        Ok(ptr) if !ptr.is_null() => {
+            // SAFETY: Tauri returns this window's live NSWindow pointer; we are on
+            // the main thread during setup and only call a property setter.
+            let ns_window: &objc2_app_kit::NSWindow =
+                unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+            ns_window.setCanHide(false);
+        }
+        _ => log::warn!("could not reach the companion NSWindow to disable app-level hide"),
+    }
+}
+
 /// Show = `orderFrontRegardless`, hide = `orderOut` (rule 4). Never
 /// `set_focus`/`show` on the companion. Main thread only.
 pub fn panel_set_visible(app: &AppHandle, visible: bool) {

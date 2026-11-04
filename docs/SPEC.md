@@ -535,6 +535,9 @@ position` functions, so an Electron fallback stays contained.
    - `set_hides_on_deactivate(false)`, `set_works_when_modal(true)`
    - collection behavior `CanJoinAllSpaces | FullScreenAuxiliary | Stationary | IgnoresCycle`
    - `set_transparent(true)`, `set_has_shadow(false)`
+   - `canHide = NO` (set on the NSWindow in every mode), so app-level Hide (Cmd+H
+     while Settings is focused, "Hide Others") never takes the companion off
+     screen and the tray's Show/Hide label always matches what is visible
 4. Show = `panel.show()` (orderFrontRegardless). Hide = `panel.hide()` (orderOut).
    Both run on the main thread.
 5. Never call `set_focus`, `show`, `set_decorations`, `set_resizable`,
@@ -543,7 +546,10 @@ position` functions, so an Electron fallback stays contained.
 6. First click is handled by `accept_first_mouse(true)` (wry's WKWebView
    override). Hover is not guaranteed in a non-key panel, so controls must read
    as controls without hover.
-7. **The companion has no text, number or select inputs.** It uses only
+7. **The companion has no text, number or select inputs.** The custom-duration
+   stepper is buttons only: a single click steps exactly 1 minute (every value
+   1–180 is reachable); press-and-hold repeats and the scroll wheel use the
+   coarse grid (±1 below 5 min, ±5 from 5 up). It uses only
    `<button>` elements with `tabIndex=-1`. That is how every widget control
    leaves keyboard focus in the user's app. The task label and typed custom
    minutes live in Settings → Start, a normal window where activating the app is
@@ -560,7 +566,10 @@ position` functions, so an Electron fallback stays contained.
   (tab ∈ general|start|history|companion). It is created on demand, activated
   with `set_focus()` (activation is intended here), and **destroyed on close**.
   `focus://open-tab` is emitted only when the window already exists; the
-  renderer reads the initial tab from `location.hash`.
+  renderer reads the initial tab from `location.hash`. The shell also remembers
+  the last requested tab; the settings page collects it with
+  `take_settings_tab` once its `open-tab` listener is registered, so a request
+  made while the page is still loading is not lost.
 - **Quit/shutdown**: one idempotent `shutdown(app)`, guarded by an AtomicBool,
   that runs `command(Quit)` and saves synchronously. It is called from
   `RunEvent::Exit`, which fires for Cmd+Q, logout and `app.exit`. It runs on the
@@ -568,6 +577,10 @@ position` functions, so an Electron fallback stays contained.
   `quit_app` call `app.exit(0)`. `RunEvent::ExitRequested{code: None}` →
   `prevent_exit()`. Keep Tauri's default macOS menu, which supplies Cmd+Q and
   Edit shortcuts for the settings inputs.
+- **Instance lock**: before touching `state.json`, setup takes an exclusive
+  advisory lock on `<appData>/state.lock` (`File::try_lock`) for the life of the
+  process; a second process that cannot get it exits quietly. This backstops
+  the single-instance plugin's startup race, so there is never a second Engine.
 - **Single instance**: `tauri_plugin_single_instance` is the **first** plugin;
   its callback shows the companion on the main thread. Store and Engine are
   created only inside `.setup()`. `RunEvent::Reopen` shows the companion. Dev
@@ -672,6 +685,7 @@ Commands. Each window's capability allows only the commands that window uses.
 | `hide_companion` | | ✓ | ✓ |
 | `reset_companion_position` | | | ✓ |
 | `open_settings{tab?: SettingsTab}` | | ✓ | |
+| `take_settings_tab` | last tab requested by `open_settings`, then cleared | | ✓ |
 | `get_app_info` | name, version, dirs, windowMode, debug, hotkeyError, unlock table, rules, limits — static data moved out of the per-tick snapshot | ✓ | ✓ |
 | `quit_app` | | | ✓ |
 

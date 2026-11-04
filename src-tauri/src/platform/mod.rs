@@ -11,14 +11,16 @@ use focus_core::engine::ActivityLevel;
 mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    install_observers, make_panel, panel_set_visible, play_chime, set_activity, style_tray,
+    exempt_from_app_hide, install_observers, make_panel, panel_set_visible, play_chime,
+    set_activity, style_tray,
 };
 
 #[cfg(not(target_os = "macos"))]
 mod other;
 #[cfg(not(target_os = "macos"))]
 pub use other::{
-    install_observers, make_panel, panel_set_visible, play_chime, set_activity, style_tray,
+    exempt_from_app_hide, install_observers, make_panel, panel_set_visible, play_chime,
+    set_activity, style_tray,
 };
 
 /// Which `NSProcessInfo` activity a level holds (SPEC §4.8).

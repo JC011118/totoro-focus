@@ -23,6 +23,7 @@ fn main() {
         "open_settings",
         "set_hotkey_capture",
         "reset_companion_position",
+        "take_settings_tab",
         "get_app_info",
         "quit_app",
     ];
