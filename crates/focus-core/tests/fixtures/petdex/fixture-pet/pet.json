@@ -1,0 +1,7 @@
+{
+  "id": "fixture-pet",
+  "displayName": "Fixture Pet",
+  "description": "An original blob drawn for the Petdex loader tests (8 x 9 atlas at 1/8 scale).",
+  "spriteVersionNumber": 1,
+  "spritesheetPath": "spritesheet.png"
+}

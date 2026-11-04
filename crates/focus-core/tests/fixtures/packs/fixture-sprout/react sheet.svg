@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="64" viewBox="0 0 192 64">
+  <!-- react: a small hop over 3 frames. Original test art, CC0-1.0. -->
+  <g fill="#6aa84f" stroke="#38761d" stroke-width="2">
+    <ellipse cx="32" cy="42" rx="15" ry="14"/>
+    <ellipse cx="96" cy="34" rx="13" ry="17"/>
+    <ellipse cx="160" cy="40" rx="14" ry="16"/>
+  </g>
+</svg>

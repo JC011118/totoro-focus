@@ -13,6 +13,8 @@ chrono.workspace = true
 thiserror.workspace = true
 log.workspace = true
 uuid = { version = "1.29", features = ["v4"] }
+# Percent-encodes pack:// URL path segments (packs::resolve_pack).
+percent-encoding = "2.3.2"
 ts-rs = { version = "12.0.1", optional = true, features = ["chrono-impl", "no-serde-warnings"] }
 
 [features]
