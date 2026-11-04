@@ -6,8 +6,9 @@ third-party character art. License: CC0-1.0 (see `LICENSE.md`).
 
 **Pip** is an original character: a small, round, moss-green seedling with a
 two-leaf sprout, dot eyes, a small blush, stubby arms and two little feet. It
-is calm and quiet by design: it breathes, blinks, closes its eyes while you
-focus, and celebrates gently. There are no sad, scolding or failure poses.
+is calm and quiet by design: it breathes, blinks, settles into a soft, calm
+gaze while you focus, and celebrates gently. There are no sad, scolding or
+failure poses.
 
 Design guard rails (keep these if you edit the art): Pip is green with a
 sprout and has no ears, no belly patch, no whiskers and no tail. It must not
@@ -29,20 +30,24 @@ Everything here is generated. Do not edit the SVGs by hand. Change
 ```bash
 python3 scripts/gen_placeholder_pack.py          # regenerate + validate
 python3 scripts/gen_placeholder_pack.py --check  # validate only
+python3 scripts/gen_placeholder_pack.py --self-test  # the generator's own tests, then validate
 ```
 
 The generator is deterministic (standard library only, no network): running it
 twice produces byte-identical files. Its validator checks the manifest against
 SPEC §7 and `data/unlocks.json`, so every animation and idle-variant unlock
 has art. It also checks that every sheet exists, is well-formed and safe, and
-has width = frames × frameWidth, and it runs the palette contrast checks below.
+has width = frames × frameWidth. It checks that every file here is exactly what
+the generator writes, so hand edits and stale output fail `--check`. It checks
+that `blink` fits the states it replaces (see below), and it runs the palette
+contrast checks below.
 
 ## Animations
 
 | key | frames | plays | stillFrame | cycle | what it shows |
 |---|---:|---|---:|---:|---|
 | `idle` | 6 | loop | 0 | 2.40 s | gentle breathing, the sprout sways |
-| `focus` | 4 | loop | 0 | 3.20 s | eyes closed, very slow calm breathing |
+| `focus` | 4 | loop | 0 | 3.20 s | settled and still: a soft, slightly lowered gaze, very slow breathing |
 | `paused` | 4 | loop | 0 | 2.00 s | sitting, eyes open, a small pause bubble |
 | `completed` | 6 | once | 5 | 0.79 s | a happy hop, then holds a happy pose |
 | `break` | 6 | loop | 0 | 4.30 s | resting with a cup of tea, takes a sip |
@@ -68,8 +73,15 @@ Notes for the renderer:
 - `stillFrame` is a calm, complete pose for every key (frame 0 of the idle-like
   loops; the peak or held pose of one-shots), so a reduced-motion companion
   still looks intentional.
-- `blink` uses the idle body pose, so it can replace `idle` or `focus` for one
-  cycle without a jump.
+- `blink` may replace `idle` or `focus` for one cycle (SPEC §7.1). Both start
+  from the same rest pose (frame 0 of `idle`), and `blink` is that pose with
+  only the eyes changed (half, shut, half), so the body does not jump going
+  into the blink or coming back to frame 0. Pip's eyes stay open in both
+  states, so a blink reads as a blink. The generator enforces this: frame 0 of
+  each replaced state must match the blink exactly outside the eyes, and no
+  frame of those loops may drift further than their breathing and sway. Do not
+  let `blink` play over other keys (paused, break, idle variants): their poses
+  differ.
 - Timing comes from `frameDurationsMs` where it matters (focus, completed,
   break, react, blink, stretch, sleepy, acorn_gift, long_session), otherwise
   from `fps`. `fps` is always present and matches the total duration.
@@ -114,7 +126,7 @@ checked against:
 | `surface` | `#e3e9d6` | soft sage (buttons, chips) |
 | `text` | `#26331f` | deep moss ink (countdown, labels) |
 | `muted` | `#55634a` | secondary text |
-| `accent` | `#4a7535` | leaf green (primary button, highlights) |
+| `accent` | `#477033` | leaf green (primary button, highlights, accent text on `surface` chips) |
 | `ring` | `#5b8c43` | progress ring |
 | `ringTrack` | `#d2dac3` | ring track |
 | `characterFilter` | (none) | Pip is drawn unfiltered |
@@ -127,7 +139,7 @@ export const FOREST = {
   surface: "#e3e9d6",
   text: "#26331f",
   muted: "#55634a",
-  accent: "#4a7535",
+  accent: "#477033",
   ring: "#5b8c43",
   ringTrack: "#d2dac3",
 } as const;
@@ -141,7 +153,13 @@ palette:
 - `text` and `muted` against both `surface` and `background`: ≥ 4.5:1
 - `accent` against `background`: ≥ 4.5:1, so it works as text color and as a
   button fill with `background`-colored text
+- `accent` against `surface`: ≥ 4.5:1, so small accent-colored text on chips
+  and buttons (for example the selected preset chip) stays readable
 - `ring` against `background`: ≥ 3:1, and against `ringTrack`: ≥ 2:1
+
+The shipped light palettes keep `accent` at about 4.6:1 on `surface`. Shades
+the renderer derives from the palette (for example a soft accent tint behind
+accent text) are not covered here, so the renderer should check those itself.
 
 Colors are lowercase `#rrggbb` only. `characterFilter` uses only
 `brightness`, `contrast`, `saturate`, `sepia`, `hue-rotate` and `grayscale`
@@ -154,7 +172,11 @@ The sheets were rendered frame by frame with the renderer's CSS math
 headless Chromium at device scale 1. They were checked at 96 px and 64 px on
 light (`#f3f0e4`) and dark (`#2d2a32`, `#1f2b22`) backgrounds, with each
 palette's `characterFilter` applied in a mock 240x200 widget. Nothing is
-clipped, the character is centered, and the face reads at 64 px.
+clipped, the character is centered, and the face reads at 64 px. The blink was
+pixel-diffed (unclipped, per-channel threshold 40) against frame 0 of `idle`
+and `focus`. Only the eyes differ, in a 26x7 px area, and the sequences the
+renderer shows (a loop frame, then blink 0, 1 and 2, then frame 0) were
+inspected at 4x, 96 px and 64 px.
 
 Not yet checked: rendering in WKWebView on macOS (the app's real renderer),
 pending manual verification.

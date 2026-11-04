@@ -19,9 +19,12 @@ Usage:
 Validation checks the manifest against SPEC §7 (and the unlock table in
 data/unlocks.json, so every animation/idleVariant unlock has art), that every
 sheet exists, is well-formed SVG without scripts or external references, and
-that sheet width == frames * frameWidth. It also checks the palettes: the base
-"forest" palette below and every palette-kind unlock in data/unlocks.json
-(hex colors only, whitelisted filters, text/surface contrast >= 4.5:1).
+that sheet width == frames * frameWidth, and that every generated file is up to
+date with this script. It checks that the blink strip changes only the eyes of
+the states it replaces (idle and focus, SPEC §7.1), so a blink never makes the
+body jump. It also checks the palettes: the base "forest" palette below and
+every palette-kind unlock in data/unlocks.json (hex colors only, whitelisted
+filters, the CONTRAST_RULES ratios).
 
 scripts/gen_icons.py imports the geometry from this module so the app icon and
 the sprites share one design.
@@ -35,7 +38,7 @@ import math
 import re
 import sys
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -531,8 +534,8 @@ class Pose:
     sx: float = 1.0  # squash and stretch around the ground point
     sy: float = 1.0
     rot: float = 0.0  # tilt in degrees around the ground point (clockwise)
-    eyes: str = "open"  # open | half | shut | closed | happy
-    look: tuple[float, float] = (0.0, 0.0)  # pupil offset for open eyes
+    eyes: str = "open"  # open | soft | half | shut | closed | happy
+    look: tuple[float, float] = (0.0, 0.0)  # pupil offset for open and soft eyes
     mouth: str = "smile"  # smile | small | grin | o | hum | none
     blush: float = 0.55
     sprout: float = 0.0  # sprout sway in degrees (clockwise)
@@ -588,6 +591,24 @@ def draw_eyes(p: Pose) -> str:
         if p.eyes == "open":
             out.append(el("ellipse", cx=ex + lx, cy=ey + ly, rx=EYE_RX, ry=EYE_RY, fill=EYE))
             out.append(el("circle", cx=ex + lx - 0.9, cy=ey + ly - 1.25, r=1.0, fill="#ffffff"))
+        elif p.eyes == "soft":  # focus: open, relaxed rounded lids, a calm, slightly lowered gaze
+            cx, cy = ex + lx, ey + ly
+            out.append(
+                el(
+                    "path",
+                    d=path_d(
+                        [
+                            ("M", cx - 2.95, cy - 0.2),
+                            ("C", cx - 2.6, cy - 3.0, cx + 2.6, cy - 3.0, cx + 2.95, cy - 0.2),
+                            ("C", cx + 3.0, cy + 4.1, cx - 3.0, cy + 4.1, cx - 2.95, cy - 0.2),
+                            ("Z",),
+                        ]
+                    ),
+                    fill=EYE,
+                    **stroke_kw(EYE, 0.9),
+                )
+            )
+            out.append(el("circle", cx=cx - 0.9, cy=cy + 0.3, r=0.85, fill="#ffffff"))
         elif p.eyes == "half":
             out.append(
                 el(
@@ -746,21 +767,29 @@ def anim_idle() -> list[Pose]:
     return out
 
 
+def rest_pose() -> Pose:
+    """Pip's rest pose: frame 0 of `idle`. `focus` starts from it and `blink` is drawn on it."""
+    return anim_idle()[0]
+
+
 def anim_blink() -> list[Pose]:
-    base = anim_idle()[0]
-    return [replace(base, eyes=e) for e in ("half", "shut", "half")]
+    # Only the eyes change, so the blink fits every state in BLINK_REPLACES (validated
+    # by check_blink_fit): those states start from this same body pose.
+    return [replace(rest_pose(), eyes=e) for e in ("half", "shut", "half")]
 
 
 def anim_focus() -> list[Pose]:
+    # Settled and still: the rest pose with relaxed, slightly lowered eyes (open, so the
+    # occasional blink over focus reads as a blink), very slow shallow breathing and an
+    # almost still sprout. Frame 0 is the rest pose itself apart from the eyes.
+    rest = rest_pose()
     return [
-        Pose(
-            **breath(k, 4, 0.016),
-            eyes="closed",
-            mouth="small",
-            blush=0.45,
-            sprout=1.2 * math.sin(2 * math.pi * k / 4),
-            arm_l=26,
-            arm_r=26,
+        replace(
+            rest,
+            **breath(k, 4, 0.014),
+            eyes="soft",
+            look=(0.0, 0.5),
+            sprout=rest.sprout + 1.0 * math.sin(2 * math.pi * k / 4),
         )
         for k in range(4)
     ]
@@ -1283,7 +1312,7 @@ GLOW_LANTERN = (
 # Listing order = pack.json order: base states, extras, then unlock ids.
 ANIMATIONS = [
     Anim("idle", anim_idle, fps=2.5, note="gentle breathing"),
-    Anim("focus", anim_focus, durations=(900, 700, 900, 700), note="eyes closed, calm slow breathing"),
+    Anim("focus", anim_focus, durations=(900, 700, 900, 700), note="settled, soft lowered gaze, slow breathing"),
     Anim("paused", anim_paused, fps=2, note="sitting, eyes open, a small pause bubble"),
     Anim(
         "completed",
@@ -1389,19 +1418,24 @@ def manifest(built: dict[str, list[Pose]]) -> dict:
     }
 
 
+def build_all() -> dict[str, list[Pose]]:
+    return {a.key: a.build() for a in ANIMATIONS}
+
+
+def expected_files(built: dict[str, list[Pose]]) -> dict[str, str]:
+    """File name -> exact content the generator writes for the pack."""
+    out = {f"{a.key}.svg": render_sheet(a, built[a.key]) for a in ANIMATIONS}
+    out["pack.json"] = json.dumps(manifest(built), indent=2) + "\n"
+    return out
+
+
 def generate() -> list[Path]:
     PACK_DIR.mkdir(parents=True, exist_ok=True)
     written = []
-    built = {}
-    for a in ANIMATIONS:
-        frames = a.build()
-        built[a.key] = frames
-        path = PACK_DIR / f"{a.key}.svg"
-        path.write_text(render_sheet(a, frames), encoding="utf-8", newline="\n")
+    for name, text in expected_files(build_all()).items():
+        path = PACK_DIR / name
+        path.write_text(text, encoding="utf-8", newline="\n")
         written.append(path)
-    mpath = PACK_DIR / "pack.json"
-    mpath.write_text(json.dumps(manifest(built), indent=2) + "\n", encoding="utf-8", newline="\n")
-    written.append(mpath)
     # Remove stale sheets from earlier versions of this script.
     keep = {p.name for p in written}
     for p in PACK_DIR.glob("*.svg"):
@@ -1433,7 +1467,7 @@ FOREST = {
     "surface": "#e3e9d6",
     "text": "#26331f",
     "muted": "#55634a",
-    "accent": "#4a7535",
+    "accent": "#477033",
     "ring": "#5b8c43",
     "ringTrack": "#d2dac3",
 }
@@ -1475,6 +1509,7 @@ CONTRAST_RULES = [
     ("muted", "surface", 4.5),
     ("muted", "background", 4.5),
     ("accent", "background", 4.5),
+    ("accent", "surface", 4.5),  # accent text on chips and buttons (e.g. the selected preset)
     ("ring", "background", 3.0),
     ("ring", "ringTrack", 2.0),
 ]
@@ -1551,6 +1586,84 @@ def safe_rel(p: str) -> bool:
     return all(seg and seg != ".." and not seg.startswith(".") for seg in p.split("/"))
 
 
+# SPEC §7.1: `blink` is a one-shot that replaces `idle` or `focus` for one cycle (the
+# renderer then restarts the base loop at frame 0). So the blink may change only the
+# eyes of the pose those states start from, or the body visibly jumps twice per blink.
+BLINK_REPLACES = ("idle", "focus")
+EYE_FIELDS = frozenset({"eyes", "look"})
+# A blink can also start mid-loop. Any frame of a replaced loop may differ from the
+# blink pose by at most this much breathing and sway; every other body field must
+# match exactly.
+BLINK_DRIFT = {"sx": 0.04, "sy": 0.04, "arm_l": 4.0, "arm_r": 4.0, "sprout": 5.0}
+
+
+def _short(v: object) -> str:
+    s = repr(v)
+    return s if len(s) <= 24 else s[:20] + "...'"
+
+
+def pose_diffs(a: Pose, b: Pose, tolerance: dict[str, float] | None = None) -> list[str]:
+    """The body fields (every field except the eyes) in which two poses differ beyond `tolerance`."""
+    out = []
+    for f in fields(Pose):
+        if f.name in EYE_FIELDS:
+            continue
+        va, vb = getattr(a, f.name), getattr(b, f.name)
+        numeric = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (va, vb))
+        if numeric:
+            if abs(va - vb) > (tolerance or {}).get(f.name, 0.0) + 1e-9:
+                out.append(f"{f.name} {num(va)} vs {num(vb)}")
+        elif va != vb:
+            out.append(f"{f.name} {_short(va)} vs {_short(vb)}")
+    return out
+
+
+def eyes_neutral(p: Pose) -> Pose:
+    return replace(p, eyes="open", look=(0.0, 0.0))
+
+
+def check_blink_fit(built: dict[str, list[Pose]]) -> list[str]:
+    """The blink strip changes only the eyes of every state in BLINK_REPLACES."""
+    blink = built.get("blink")
+    if not blink:
+        return ["blink: no frames"]
+    errors = []
+    base = blink[0]
+    for i, p in enumerate(blink[1:], 1):
+        d = pose_diffs(base, p)
+        if d:
+            errors.append(
+                f"blink frame {i}: body differs from blink frame 0 ({', '.join(d)}); a blink moves only the eyes"
+            )
+    for key in BLINK_REPLACES:
+        frames = built.get(key)
+        if not frames:
+            errors.append(f"blink replaces {key}, which has no frames")
+            continue
+        d = pose_diffs(base, frames[0])
+        if d:
+            errors.append(f"blink does not fit {key}: body differs from {key} frame 0 ({', '.join(d)})")
+        elif draw_frame(eyes_neutral(base)) != draw_frame(eyes_neutral(frames[0])):
+            errors.append(f"blink does not fit {key}: frame 0 renders differently outside the eyes")
+        for k, p in enumerate(frames[1:], 1):
+            d = pose_diffs(base, p, BLINK_DRIFT)
+            if d:
+                errors.append(f"blink does not fit {key}: frame {k} is too far from the blink pose ({', '.join(d)})")
+    return errors
+
+
+def check_up_to_date(pack_dir: Path, built: dict[str, list[Pose]]) -> list[str]:
+    """Every generated file on disk is exactly what this script writes (no hand edits, no stale output)."""
+    errors = []
+    for name, text in expected_files(built).items():
+        path = pack_dir / name
+        if not path.is_file():
+            errors.append(f"{name}: missing; run python3 scripts/gen_placeholder_pack.py")
+        elif path.read_text(encoding="utf-8") != text:
+            errors.append(f"{name}: differs from the generator output; run python3 scripts/gen_placeholder_pack.py")
+    return errors
+
+
 def validate(verbose: bool = True) -> list[str]:
     errors: list[str] = []
     report: list[str] = []
@@ -1619,6 +1732,13 @@ def validate(verbose: bool = True) -> list[str]:
     for pid, pal in (m.get("palettes") or {}).items():
         e, _ = check_palette(f"pack:{pid}", pal, require_filter=False)
         errors += e
+
+    built = build_all()
+    errors += check_up_to_date(PACK_DIR, built)
+    fit = check_blink_fit(built)
+    errors += fit
+    if not fit:
+        report.append(f"  blink changes only the eyes of: {', '.join(BLINK_REPLACES)} (SPEC §7.1)")
 
     report.append("palettes (contrast ratios):")
     e, r = check_palette("forest", FOREST, require_filter=False)
@@ -1746,6 +1866,71 @@ def self_test() -> list[str]:
         any("unknown field" in e for e in check_palette("t", dict(good, glow="#ffffff"), True)[0]),
         "unknown field fails",
     )
+    # Accent is used as text on surface-colored chips: the old forest accent passed on
+    # the background (4.73) but not on the surface (4.35), and must now fail.
+    errs = check_palette("t", dict(good, accent="#4a7535"), True)[0]
+    expect(len(errs) == 1 and "contrast accent/surface" in errs[0], f"accent/surface rule rejects #4a7535 (got {errs})")
+
+    # Blink fits every state it may replace (SPEC §7.1): it changes only the eyes.
+    built = build_all()
+    fit = check_blink_fit(built)
+    expect(fit == [], f"blink fits idle and focus (got {fit[:2]})")
+    expect([p.eyes for p in built["blink"]] == ["half", "shut", "half"], "blink is half, shut, half")
+    expect(
+        all(p.eyes in ("open", "soft") for k in BLINK_REPLACES for p in built[k]),
+        "idle and focus keep their eyes open, so a blink over them reads as a blink",
+    )
+    expect(set(BLINK_REPLACES) == {"idle", "focus"}, "BLINK_REPLACES matches SPEC §7.1 (idle, focus)")
+    for key in BLINK_REPLACES:
+        expect(
+            draw_frame(eyes_neutral(built["blink"][0])) == draw_frame(eyes_neutral(built[key][0])),
+            f"blink frame 0 and {key} frame 0 render identically apart from the eyes",
+        )
+    expect(draw_frame(built["blink"][0]) != draw_frame(built["focus"][0]), "focus and blink still differ in the eyes")
+    expect(pose_diffs(Pose(eyes="open", look=(1.0, 1.0)), Pose(eyes="shut")) == [], "pose_diffs ignores the eyes")
+    expect(pose_diffs(Pose(arm_l=40), Pose(arm_l=43), {"arm_l": 4.0}) == [], "pose_diffs honours a tolerance")
+    expect(pose_diffs(Pose(arm_l=40), Pose(arm_l=None)) != [], "a hidden arm is a body difference")
+    expect(pose_diffs(Pose(held="<circle/>"), Pose()) != [], "a held prop is a body difference")
+    # The original closed-eyed focus (arms 26, small mouth, less blush) is rejected.
+    old_focus = [
+        Pose(**breath(k, 4, 0.016), eyes="closed", mouth="small", blush=0.45, arm_l=26, arm_r=26) for k in range(4)
+    ]
+    errs = check_blink_fit(dict(built, focus=old_focus))
+    expect(
+        any("focus frame 0" in e and all(f in e for f in ("arm_l", "arm_r", "mouth", "blush")) for e in errs),
+        f"blink over the old focus pose is rejected (got {errs[:2]})",
+    )
+    # A blink frame that moves the body is rejected.
+    moved = [built["blink"][0], replace(built["blink"][1], arm_r=60.0), built["blink"][2]]
+    expect(
+        any(e.startswith("blink frame 1:") for e in check_blink_fit(dict(built, blink=moved))),
+        "a blink that moves an arm is rejected",
+    )
+    # Frame 0 must match exactly (the base loop restarts there after a blink).
+    idle = list(built["idle"])
+    idle[0] = replace(idle[0], sprout=idle[0].sprout + 0.5)
+    expect(
+        any("idle frame 0" in e and "sprout" in e for e in check_blink_fit(dict(built, idle=idle))),
+        "a sprout offset on idle frame 0 is rejected",
+    )
+    # A loop may breathe and sway, but not drift far from the blink pose mid-loop.
+    focus = list(built["focus"])
+    focus[2] = replace(focus[2], arm_l=55.0)
+    expect(
+        any("focus: frame 2" in e and "arm_l" in e for e in check_blink_fit(dict(built, focus=focus))),
+        "a focus frame that raises an arm is rejected",
+    )
+    focus[2] = replace(built["focus"][2], mouth="o")
+    expect(
+        any("focus: frame 2" in e and "mouth" in e for e in check_blink_fit(dict(built, focus=focus))),
+        "a focus frame with another mouth is rejected",
+    )
+    expect(
+        any("has no frames" in e for e in check_blink_fit({k: v for k, v in built.items() if k != "focus"})),
+        "a missing replaced state is reported",
+    )
+    expect(check_blink_fit({k: v for k, v in built.items() if k != "blink"}) == ["blink: no frames"], "no blink")
+    expect(draw_eyes(Pose(eyes="soft")).count("<path") == 2, "soft eyes draw one lid shape per eye")
 
     # Rendering is deterministic and every sheet has one clipped cell per frame.
     for a in ANIMATIONS:
@@ -1787,6 +1972,22 @@ def self_test() -> list[str]:
                 bool(errs) == should_fail,
                 f"check_svg {name}: expected {'errors' if should_fail else 'none'}, got {errs[:2]}",
             )
+
+    # check_up_to_date catches hand edits and missing output.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        files = expected_files(built)
+        for name, text in files.items():
+            (d / name).write_text(text, encoding="utf-8", newline="\n")
+        expect(check_up_to_date(d, built) == [], "fresh generator output is up to date")
+        (d / "blink.svg").write_text(files["blink.svg"].replace(f'fill="{EYE}"', 'fill="#000000"', 1), encoding="utf-8")
+        (d / "focus.svg").unlink()
+        errs = check_up_to_date(d, built)
+        expect(
+            any(e.startswith("blink.svg: differs") for e in errs)
+            and any(e.startswith("focus.svg: missing") for e in errs),
+            f"check_up_to_date reports an edited and a missing sheet (got {errs})",
+        )
     return failures
 
 
