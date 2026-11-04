@@ -7,12 +7,19 @@
 //! needs is copied out into an [`Outcome`] before the guard drops; effects are
 //! applied afterwards (`effects::apply`) with no lock held. Nothing in this
 //! module calls a Tauri, panel, tray, menu or global-shortcut API, or emits.
+//!
+//! Effects that set a piece of OS state (companion visibility, the process
+//! activity) are applied latest-wins: the wanted value is recorded under the
+//! engine lock, so in `seq` order, and the applier reads the newest value
+//! instead of trusting its own effect's payload. Two threads that apply their
+//! effects in the opposite order of their engine calls still settle on the
+//! state of the newer call.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use focus_core::engine::{CommandError, Effect, Engine, SystemEvent};
+use focus_core::engine::{ActivityLevel, CommandError, Effect, Engine, SystemEvent};
 use focus_core::packs::PackRegistry;
 use focus_core::rewards::UnlockTable;
 use focus_core::snapshot::{Phase, Snapshot};
@@ -66,6 +73,8 @@ pub struct Shell {
     /// Whether the companion should be shown. Written only under the engine lock,
     /// so `Snapshot.companion_visible` is stamped in `seq` order.
     companion_wanted: AtomicBool,
+    /// The process activity (App Nap / idle sleep), applied latest-wins.
+    activity: ActivitySync,
     emits: EmitGate,
     pub ticker: Waker,
     shutting_down: AtomicBool,
@@ -90,6 +99,7 @@ impl Shell {
             packs: RwLock::new(packs),
             dirs,
             companion_wanted: AtomicBool::new(false),
+            activity: ActivitySync::default(),
             emits: EmitGate::default(),
             ticker: Waker::default(),
             shutting_down: AtomicBool::new(false),
@@ -116,6 +126,21 @@ impl Shell {
         Ok(self.finish(&mut cell, now, effects))
     }
 
+    /// Like [`Shell::call`], for a call that may decide under the lock that there
+    /// is nothing to do: `Ok(None)` from `f` stamps nothing and returns `Ok(None)`
+    /// (`f` must then have left the engine unchanged).
+    pub fn try_call(
+        &self,
+        f: impl FnOnce(&mut Engine, Now) -> Result<Option<Vec<Effect>>, CommandError>,
+    ) -> Result<Option<Outcome>, CommandError> {
+        let mut cell = self.lock();
+        let now = self.clock.now();
+        let Some(effects) = f(&mut cell.engine, now)? else {
+            return Ok(None);
+        };
+        Ok(Some(self.finish(&mut cell, now, effects)))
+    }
+
     /// `engine.system(event, now)` through the same pipeline.
     pub fn call_system(&self, event: SystemEvent) -> Outcome {
         let mut cell = self.lock();
@@ -133,6 +158,9 @@ impl Shell {
     fn finish(&self, cell: &mut EngineCell, now: Now, effects: Vec<Effect>) -> Outcome {
         if let Some(visible) = visibility_change(&effects) {
             self.companion_wanted.store(visible, Ordering::SeqCst);
+        }
+        if let Some(level) = activity_change(&effects) {
+            self.activity.want(level);
         }
         let persist = effects
             .iter()
@@ -179,6 +207,19 @@ impl Shell {
 
     pub fn companion_wanted(&self) -> bool {
         self.companion_wanted.load(Ordering::SeqCst)
+    }
+
+    /// The process activity the newest engine call asked for.
+    #[cfg(test)]
+    pub fn activity_wanted(&self) -> ActivityLevel {
+        self.activity.wanted()
+    }
+
+    /// Hand the newest wanted process activity to `apply` (latest-wins, see
+    /// [`ActivitySync`]). Called for every `ActivityChanged` effect instead of
+    /// applying that effect's own level. Returns the level applied, if any.
+    pub fn sync_activity(&self, apply: impl FnOnce(ActivityLevel)) -> Option<ActivityLevel> {
+        self.activity.sync(apply)
     }
 
     /// Apply a Persist: save `state` (taken at `now`, generation `seq`), then
@@ -238,6 +279,62 @@ pub fn visibility_change(effects: &[Effect]) -> Option<bool> {
         Effect::HideCompanion => Some(false),
         _ => None,
     })
+}
+
+/// The last process activity level requested by `effects`, if any.
+pub fn activity_change(effects: &[Effect]) -> Option<ActivityLevel> {
+    effects.iter().rev().find_map(|e| match e {
+        Effect::ActivityChanged { level } => Some(*level),
+        _ => None,
+    })
+}
+
+/// The process activity (SPEC §4.8), applied latest-wins.
+///
+/// `want` is called under the engine lock, so `wanted` always holds the level of
+/// the newest engine call. `sync` reads `wanted` and applies it while holding
+/// `applied`, so reading and applying are one step among appliers: whichever
+/// applier runs last read the value after every earlier call's `want`, and the
+/// OS ends up with the newest level even when two threads apply their
+/// `ActivityChanged` effects in the opposite order of their engine calls.
+#[derive(Debug)]
+pub struct ActivitySync {
+    wanted: Mutex<ActivityLevel>,
+    /// The level last handed to the OS. A new process holds no activity.
+    applied: Mutex<ActivityLevel>,
+}
+
+impl Default for ActivitySync {
+    fn default() -> Self {
+        Self {
+            wanted: Mutex::new(ActivityLevel::None),
+            applied: Mutex::new(ActivityLevel::None),
+        }
+    }
+}
+
+impl ActivitySync {
+    /// Record the level the newest engine call asked for (under the engine lock).
+    pub fn want(&self, level: ActivityLevel) {
+        *self.wanted.lock().unwrap_or_else(PoisonError::into_inner) = level;
+    }
+
+    pub fn wanted(&self) -> ActivityLevel {
+        *self.wanted.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Apply the newest wanted level unless it is already applied. Returns the
+    /// level handed to `apply`, if any.
+    pub fn sync(&self, apply: impl FnOnce(ActivityLevel)) -> Option<ActivityLevel> {
+        let mut applied = self.applied.lock().unwrap_or_else(PoisonError::into_inner);
+        let wanted = self.wanted();
+        if *applied == wanted {
+            return None;
+        }
+        apply(wanted);
+        *applied = wanted;
+        Some(wanted)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -384,6 +481,144 @@ pub(crate) mod tests {
             visibility_change(&[Effect::HideCompanion, Effect::ShowCompanion]),
             Some(true)
         );
+    }
+
+    #[test]
+    fn activity_change_takes_the_last_level() {
+        assert_eq!(activity_change(&[]), None);
+        assert_eq!(activity_change(&[Effect::Persist]), None);
+        assert_eq!(
+            activity_change(&[
+                Effect::Persist,
+                Effect::ActivityChanged {
+                    level: ActivityLevel::Focus
+                }
+            ]),
+            Some(ActivityLevel::Focus)
+        );
+        assert_eq!(
+            activity_change(&[
+                Effect::ActivityChanged {
+                    level: ActivityLevel::Focus
+                },
+                Effect::ShowCompanion,
+                Effect::ActivityChanged {
+                    level: ActivityLevel::None
+                },
+            ]),
+            Some(ActivityLevel::None)
+        );
+    }
+
+    fn recorder() -> (
+        Arc<Mutex<Vec<ActivityLevel>>>,
+        impl Fn() -> Vec<ActivityLevel>,
+    ) {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let read = {
+            let log = log.clone();
+            move || log.lock().unwrap().clone()
+        };
+        (log, read)
+    }
+
+    #[test]
+    fn a_new_process_holds_no_activity_and_syncing_it_does_nothing() {
+        let sync = ActivitySync::default();
+        assert_eq!(sync.wanted(), ActivityLevel::None);
+        assert_eq!(sync.sync(|_| panic!("nothing to apply")), None);
+    }
+
+    #[test]
+    fn activity_sync_applies_each_new_level_once() {
+        let sync = ActivitySync::default();
+        let (log, applied) = recorder();
+        let record = |l| log.lock().unwrap().push(l);
+        sync.want(ActivityLevel::Focus);
+        assert_eq!(sync.sync(record), Some(ActivityLevel::Focus));
+        assert_eq!(sync.sync(record), None, "already applied");
+        sync.want(ActivityLevel::Break);
+        assert_eq!(sync.sync(record), Some(ActivityLevel::Break));
+        sync.want(ActivityLevel::None);
+        assert_eq!(sync.sync(record), Some(ActivityLevel::None));
+        assert_eq!(
+            applied(),
+            vec![
+                ActivityLevel::Focus,
+                ActivityLevel::Break,
+                ActivityLevel::None
+            ]
+        );
+    }
+
+    /// The review finding's interleaving: the ticker's call (seq N) completes a
+    /// focus session (→ None) and is preempted before applying; the hotkey's call
+    /// (seq N+1) starts focus (→ Focus) and applies first; then the ticker applies.
+    /// Focus must stay held.
+    #[test]
+    fn a_late_apply_of_an_older_call_never_undoes_a_newer_level() {
+        let sync = ActivitySync::default();
+        let (log, applied) = recorder();
+        let record = |l| log.lock().unwrap().push(l);
+        sync.want(ActivityLevel::Focus); // the session that is about to complete
+        sync.sync(record);
+
+        sync.want(ActivityLevel::None); // ticker, seq N, under the engine lock
+        sync.want(ActivityLevel::Focus); // hotkey Toggle, seq N+1, under the engine lock
+        assert_eq!(sync.sync(record), None, "hotkey: Focus is already held");
+        assert_eq!(sync.sync(record), None, "ticker: reads the newest level");
+        assert_eq!(applied(), vec![ActivityLevel::Focus]);
+
+        // The same race with the newer call ending the session.
+        sync.want(ActivityLevel::Break); // seq N+2
+        sync.want(ActivityLevel::None); // seq N+3
+        assert_eq!(sync.sync(record), Some(ActivityLevel::None), "seq N+3");
+        assert_eq!(sync.sync(record), None, "seq N+2 applies late: no change");
+        assert_eq!(applied(), vec![ActivityLevel::Focus, ActivityLevel::None]);
+    }
+
+    #[test]
+    fn racing_appliers_settle_on_the_newest_level() {
+        const LEVELS: [ActivityLevel; 3] = [
+            ActivityLevel::None,
+            ActivityLevel::Break,
+            ActivityLevel::Focus,
+        ];
+        for round in 0..20 {
+            let sync = Arc::new(ActivitySync::default());
+            // Stands in for the engine lock: `want` happens under it, in seq order.
+            let engine = Arc::new(Mutex::new(0u64));
+            let applied = Arc::new(Mutex::new(Vec::new()));
+            let handles: Vec<_> = (0..8usize)
+                .map(|t| {
+                    let (sync, engine, applied) = (sync.clone(), engine.clone(), applied.clone());
+                    std::thread::spawn(move || {
+                        for i in 0..50usize {
+                            {
+                                let mut seq = engine.lock().unwrap();
+                                *seq += 1;
+                                sync.want(LEVELS[(t * 7 + i + round) % 3]);
+                            }
+                            if i % 3 == t % 3 {
+                                std::thread::yield_now();
+                            }
+                            sync.sync(|l| applied.lock().unwrap().push(l));
+                        }
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().unwrap();
+            }
+            let newest = sync.wanted();
+            let last_applied = applied
+                .lock()
+                .unwrap()
+                .last()
+                .copied()
+                .unwrap_or(ActivityLevel::None);
+            assert_eq!(last_applied, newest, "round {round}");
+        }
     }
 
     #[test]

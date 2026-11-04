@@ -11,7 +11,9 @@
 //! Positions are logical points with the origin at the top-left of the primary
 //! display. A move made by the shell (startup placement, recovery, reset) does
 //! not overwrite the saved preferred position: the Moved event it causes is
-//! ignored. User moves are debounced (~500 ms) into `settings.widgetPosition`.
+//! ignored. User moves are debounced (~500 ms) into `settings.widgetPosition`;
+//! a drag still waiting in the debouncer at quit is saved by `effects::shutdown`
+//! together with the Quit checkpoint.
 
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Mutex, PoisonError};
@@ -135,12 +137,46 @@ impl<T: Send + 'static> Debouncer<T> {
     }
 }
 
+/// The newest user position that has not reached `settings.widgetPosition` yet
+/// (it is waiting in the debouncer, or was left for shutdown to save).
+#[derive(Debug, Default)]
+pub struct PendingPosition(Mutex<Option<(f64, f64)>>);
+
+impl PendingPosition {
+    fn slot(&self) -> std::sync::MutexGuard<'_, Option<(f64, f64)>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn get(&self) -> Option<(f64, f64)> {
+        *self.slot()
+    }
+
+    pub fn set(&self, pos: (f64, f64)) {
+        *self.slot() = Some(pos);
+    }
+
+    /// Take the pending position (shutdown folds it into its final save).
+    pub fn take(&self) -> Option<(f64, f64)> {
+        self.slot().take()
+    }
+
+    /// Clear the slot iff it still holds `pos` (checked and cleared under one
+    /// lock, so a newer drag recorded meanwhile stays pending).
+    pub fn clear_if(&self, pos: (f64, f64)) -> bool {
+        let mut slot = self.slot();
+        let matches = *slot == Some(pos);
+        if matches {
+            *slot = None;
+        }
+        matches
+    }
+}
+
 /// Companion window state (managed by Tauri).
 pub struct CompanionState {
     mode: WindowMode,
     programmatic: Mutex<Option<ProgrammaticMove>>,
-    /// A user position waiting in the debouncer (newer than the saved one).
-    pending: Mutex<Option<(f64, f64)>>,
+    pending: PendingPosition,
     moves: Debouncer<(f64, f64)>,
 }
 
@@ -153,7 +189,7 @@ impl CompanionState {
         Self {
             mode,
             programmatic: Mutex::new(None),
-            pending: Mutex::new(None),
+            pending: PendingPosition::default(),
             moves,
         }
     }
@@ -163,11 +199,14 @@ impl CompanionState {
     }
 
     fn pending(&self) -> Option<(f64, f64)> {
-        *self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+        self.pending.get()
     }
 
-    fn set_pending(&self, value: Option<(f64, f64)>) {
-        *self.pending.lock().unwrap_or_else(PoisonError::into_inner) = value;
+    /// Take a user drag that has not been saved yet. Called by
+    /// `effects::shutdown` after shutdown has begun, so the debouncer can no
+    /// longer save it (`actions::save_widget_position` defers to shutdown).
+    pub fn take_pending(&self) -> Option<(f64, f64)> {
+        self.pending.take()
     }
 
     fn mark_programmatic(&self, target: (f64, f64)) {
@@ -186,12 +225,14 @@ impl CompanionState {
     }
 }
 
+/// The debouncer's commit. Once shutdown has begun the position stays pending:
+/// `effects::shutdown` takes it and saves it with the Quit checkpoint.
 fn commit_user_move(app: &AppHandle, pos: (f64, f64)) {
-    actions::save_widget_position(app, pos);
+    if !actions::save_widget_position(app, pos) {
+        return;
+    }
     if let Some(state) = app.try_state::<CompanionState>() {
-        if state.pending() == Some(pos) {
-            state.set_pending(None);
-        }
+        state.pending.clear_if(pos);
     }
 }
 
@@ -262,7 +303,7 @@ fn on_moved(app: &AppHandle, pos: (f64, f64)) {
     if state.is_programmatic(pos) {
         return;
     }
-    state.set_pending(Some(pos));
+    state.pending.set(pos);
     state.moves.push(pos);
 }
 
@@ -679,6 +720,26 @@ mod tests {
         );
         d.push(9);
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(9));
+    }
+
+    #[test]
+    fn pending_position_take_and_clear_if() {
+        let p = PendingPosition::default();
+        assert_eq!(p.get(), None);
+        assert_eq!(p.take(), None);
+        p.set((10.0, 20.0));
+        assert_eq!(p.get(), Some((10.0, 20.0)));
+        // A commit of an older drag does not clear a newer one.
+        assert!(!p.clear_if((1.0, 2.0)));
+        assert_eq!(p.get(), Some((10.0, 20.0)));
+        assert!(p.clear_if((10.0, 20.0)));
+        assert_eq!(p.get(), None);
+        // Shutdown takes the newest drag exactly once.
+        p.set((30.0, 40.0));
+        p.set((50.0, 60.0));
+        assert_eq!(p.take(), Some((50.0, 60.0)));
+        assert_eq!(p.take(), None);
+        assert!(!p.clear_if((50.0, 60.0)), "already taken by shutdown");
     }
 
     #[test]

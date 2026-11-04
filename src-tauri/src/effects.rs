@@ -4,13 +4,15 @@
 //! SettingsChanged, Show/HideCompanion, ActivityChanged, Transition, PlaySound
 //! in the order the engine returned them, then exactly one `focus://snapshot`,
 //! then the tray. Persist is applied synchronously, so a WillSleep observer or
-//! the Exit handler has saved before it returns.
+//! the Exit handler has saved before it returns. Show/HideCompanion and
+//! ActivityChanged are applied latest-wins (see `shell`).
 
-use focus_core::engine::{Command, Effect, SystemEvent, Transition};
+use focus_core::engine::{ActivityLevel, Command, Effect, Engine, SystemEvent, Transition};
 use focus_core::events;
 use focus_core::settings::Settings;
 use focus_core::snapshot::Snapshot;
 use focus_core::timer::PauseReason;
+use focus_core::Now;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::shell::{Outcome, Shell};
@@ -36,7 +38,7 @@ pub fn apply(app: &AppHandle, shell: &Shell, outcome: Outcome, emit: Emit) -> Sn
         shell.persist(snapshot.seq, now, state);
     }
     for effect in effects {
-        apply_one(app, effect);
+        apply_one(app, shell, effect);
     }
     if shell.admit_emit(&snapshot, emit == Emit::Always) {
         if let Err(e) = app.emit(events::SNAPSHOT, &snapshot) {
@@ -50,12 +52,17 @@ pub fn apply(app: &AppHandle, shell: &Shell, outcome: Outcome, emit: Emit) -> Sn
     snapshot
 }
 
-fn apply_one(app: &AppHandle, effect: Effect) {
+fn apply_one(app: &AppHandle, shell: &Shell, effect: Effect) {
     match effect {
         Effect::Persist => {} // already saved, once, before everything else
         Effect::SettingsChanged { previous, current } => settings_changed(app, &previous, &current),
+        // Both are latest-wins: they apply the newest wanted state (recorded under
+        // the engine lock), not this effect's payload, so a call whose effects are
+        // applied after a newer call's never undoes the newer state.
         Effect::ShowCompanion | Effect::HideCompanion => companion::sync_visibility(app),
-        Effect::ActivityChanged { level } => platform::set_activity(level),
+        Effect::ActivityChanged { .. } => {
+            shell.sync_activity(platform::set_activity);
+        }
         Effect::Transition(t) => {
             log_transition(&t);
             if let Err(e) = app.emit(events::TRANSITION, &t) {
@@ -131,28 +138,78 @@ fn warn_on_stall(effects: &[Effect]) {
 }
 
 /// Idempotent shutdown (SPEC §8.2): `command(Quit)` and a synchronous save.
-/// Called from `RunEvent::Exit` on the main thread, so it never round-trips to
-/// the main thread: no emits, no window or tray calls.
+/// A companion drag still waiting in the debouncer is folded into the same
+/// save, so a move made just before quitting is kept. Called from
+/// `RunEvent::Exit` on the main thread, so it never round-trips to the main
+/// thread: no emits, no window or tray calls.
 pub fn shutdown(app: &AppHandle) {
     let Some(shell) = app.try_state::<Shell>() else {
         return;
     };
+    let pending = || {
+        app.try_state::<companion::CompanionState>()
+            .and_then(|c| c.take_pending())
+    };
+    if shutdown_shell(&shell, pending, platform::set_activity) {
+        shell.ticker.kick();
+        log::info!("shutdown complete");
+    }
+}
+
+/// Shutdown's engine work, save and activity release, with no Tauri runtime
+/// involved. Returns `false` (doing nothing) when shutdown already ran.
+///
+/// `pending_position` is read only after the shutdown flag is set: from then on
+/// `actions::store_widget_position` leaves positions alone (it checks the flag
+/// under the engine lock), so the debouncer can neither lose the drag nor save
+/// it after the Quit checkpoint.
+pub fn shutdown_shell(
+    shell: &Shell,
+    pending_position: impl FnOnce() -> Option<(f64, f64)>,
+    set_activity: impl FnOnce(ActivityLevel),
+) -> bool {
     if !shell.begin_shutdown() {
-        return;
+        return false;
     }
-    match shell.call(|engine, now| engine.command(Command::Quit, now)) {
-        Ok(outcome) => {
-            if let Some(state) = &outcome.persist {
-                shell.persist(outcome.snapshot.seq, outcome.now, state);
-            }
-            for effect in outcome.effects {
-                if let Effect::ActivityChanged { level } = effect {
-                    platform::set_activity(level);
-                }
-            }
+    let position = pending_position();
+    let mut refused = Vec::new();
+    let result = shell.call(|engine, now| Ok(quit_effects(engine, now, position, &mut refused)));
+    for e in refused {
+        log::error!("{e}");
+    }
+    // `quit_effects` never fails, so the call always produces an outcome.
+    if let Ok(outcome) = result {
+        if let Some(state) = &outcome.persist {
+            shell.persist(outcome.snapshot.seq, outcome.now, state);
         }
-        Err(e) => log::error!("quit was refused by the engine: {e}"),
     }
-    shell.ticker.kick();
-    log::info!("shutdown complete");
+    // Quit paused any running session; release the activity it held.
+    shell.sync_activity(set_activity);
+    true
+}
+
+/// Under the engine lock: store a not-yet-saved companion drag, then Quit
+/// (pause + Persist), so one synchronous save holds both. A refusal of either
+/// is reported in `refused` (logged after the lock is dropped); the other still
+/// runs, and both use the same `now`.
+fn quit_effects(
+    engine: &mut Engine,
+    now: Now,
+    position: Option<(f64, f64)>,
+    refused: &mut Vec<String>,
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    if let Some(pos) = position {
+        match actions::widget_position_update(engine, now, pos) {
+            Ok(fx) => effects.extend(fx.unwrap_or_default()),
+            Err(e) => refused.push(format!(
+                "the last companion position {pos:?} was not saved: {e}"
+            )),
+        }
+    }
+    match engine.command(Command::Quit, now) {
+        Ok(fx) => effects.extend(fx),
+        Err(e) => refused.push(format!("quit was refused by the engine: {e}")),
+    }
+    effects
 }

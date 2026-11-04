@@ -3,18 +3,19 @@
 //! lock discipline: engine work happens inside `Shell::call`/`Shell::read`
 //! closures, and every Tauri call happens after the guard is dropped.
 
-use focus_core::engine::{Command, CommandError, Effect};
+use focus_core::engine::{Command, CommandError, Effect, Engine};
 use focus_core::events::{self, PlayEvent, COMPANION_WINDOW};
 use focus_core::history::SessionRecord;
 use focus_core::packs::{PackInfo, PackRegistry, ResolvedPack};
 use focus_core::settings::{SettingsPatch, WidgetPosition};
 use focus_core::snapshot::{AppInfo, Snapshot};
+use focus_core::Now;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::companion::{self, CompanionState};
 use crate::effects::{self, Emit};
 use crate::pack_protocol;
-use crate::shell::Shell;
+use crate::shell::{Outcome, Shell};
 use crate::{hotkey, settings_window};
 
 /// Default and maximum `get_history` sizes (newest first).
@@ -192,20 +193,78 @@ pub fn history(app: &AppHandle, limit: Option<u32>) -> Vec<SessionRecord> {
         .read(|engine, _, _| engine.history().recent(limit))
 }
 
-/// Save a companion position (user drag, after debouncing, or a reset).
-pub fn save_widget_position(app: &AppHandle, (x, y): (f64, f64)) {
-    let Some(shell) = app.try_state::<Shell>() else {
-        return;
-    };
+/// The engine work that stores a companion position, run under the engine
+/// lock: `Ok(None)` when the engine already holds it (nothing changes).
+pub fn widget_position_update(
+    engine: &mut Engine,
+    now: Now,
+    (x, y): (f64, f64),
+) -> Result<Option<Vec<Effect>>, CommandError> {
     let position = WidgetPosition { x, y };
-    if shell.read(|engine, _, _| engine.settings().widget_position) == Some(position) {
-        return;
+    if engine.settings().widget_position == Some(position) {
+        return Ok(None);
     }
     let patch = SettingsPatch {
         widget_position: Some(Some(position)),
         ..SettingsPatch::default()
     };
-    run_logged(app, Command::UpdateSettings(patch));
+    engine
+        .command(Command::UpdateSettings(patch), now)
+        .map(Some)
+}
+
+/// What [`store_widget_position`] did.
+#[derive(Debug)]
+pub enum PositionCall {
+    /// The engine took the position; the outcome still has to be applied.
+    Stored(Box<Outcome>),
+    /// The engine already held it.
+    Unchanged,
+    /// Shutdown has begun: nothing was changed, and `effects::shutdown` folds
+    /// the pending position into its own save.
+    LeftForShutdown,
+    Refused(CommandError),
+}
+
+/// Store a companion position through the call pipeline. The shutdown check is
+/// made under the engine lock, so a position call never runs after shutdown's
+/// Quit, whose save it would otherwise race with process exit.
+pub fn store_widget_position(shell: &Shell, pos: (f64, f64)) -> PositionCall {
+    let mut late = false;
+    let result = shell.try_call(|engine, now| {
+        if shell.is_shutting_down() {
+            late = true;
+            return Ok(None);
+        }
+        widget_position_update(engine, now, pos)
+    });
+    match result {
+        Ok(Some(outcome)) => PositionCall::Stored(Box::new(outcome)),
+        Ok(None) if late => PositionCall::LeftForShutdown,
+        Ok(None) => PositionCall::Unchanged,
+        Err(e) => PositionCall::Refused(e),
+    }
+}
+
+/// Save a companion position (user drag, after debouncing, or a reset).
+/// Returns `false` only when shutdown has begun and the position was left for
+/// `effects::shutdown` to save; the caller then keeps it pending.
+pub fn save_widget_position(app: &AppHandle, pos: (f64, f64)) -> bool {
+    let Some(shell) = app.try_state::<Shell>() else {
+        return true;
+    };
+    match store_widget_position(&shell, pos) {
+        PositionCall::Stored(outcome) => {
+            effects::apply(app, &shell, *outcome, Emit::Always);
+            true
+        }
+        PositionCall::Unchanged => true,
+        PositionCall::LeftForShutdown => false,
+        PositionCall::Refused(e) => {
+            log::info!("the companion position {pos:?} was not saved: {e}");
+            true
+        }
+    }
 }
 
 /// Move the companion to the default spot on the primary display and save it.
