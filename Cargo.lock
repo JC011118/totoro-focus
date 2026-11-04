@@ -1055,6 +1055,7 @@ name = "focus-core"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "focus-core",
  "log",
  "serde",
  "serde_json",

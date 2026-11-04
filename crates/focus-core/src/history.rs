@@ -1,10 +1,13 @@
 //! Session history and the derived "today" summary (harvest row, focus time).
 //! See docs/SPEC.md §6.
 
+use std::collections::HashSet;
+
 use chrono::{FixedOffset, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 use crate::clock::Wall;
+use crate::snapshot::format_focus_label;
 use crate::timer::SessionKind;
 
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
@@ -101,14 +104,33 @@ impl History {
 
     /// Append unless a record with the same id exists. Returns whether it was appended.
     pub fn push_once(&mut self, record: SessionRecord) -> bool {
-        let _ = record;
-        todo!("history: push_once")
+        if self.contains(&record.id) {
+            return false;
+        }
+        self.records.push(record);
+        true
+    }
+
+    /// Remove later records whose id already appeared, keeping the first of each.
+    /// Returns whether anything was removed.
+    pub fn dedupe(&mut self) -> bool {
+        let before = self.records.len();
+        let mut seen = HashSet::new();
+        self.records.retain(|r| seen.insert(r.id.clone()));
+        self.records.len() != before
+    }
+
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
     }
 
     /// Reverse insertion order (newest appended first), at most `limit`.
     pub fn recent(&self, limit: usize) -> Vec<SessionRecord> {
-        let _ = limit;
-        todo!("history: recent")
+        self.records.iter().rev().take(limit).cloned().collect()
     }
 
     /// Summary for the local day containing `now`. Each record's day is the
@@ -121,7 +143,50 @@ impl History {
         offset_at: &dyn Fn(Wall) -> FixedOffset,
         active_focus_ms: u64,
     ) -> TodaySummary {
-        let _ = (now, offset_at, active_focus_ms);
-        todo!("history: today")
+        let today = local_date(now, offset_at(now));
+        let mut summary = TodaySummary {
+            date: today.format("%Y-%m-%d").to_string(),
+            focus_ms: 0,
+            active_focus_ms,
+            completed: 0,
+            interrupted: 0,
+            harvest: Vec::new(),
+            focus_label: String::new(),
+        };
+        for r in self.records.iter().filter(|r| r.kind == SessionKind::Focus) {
+            if record_local_date(r, offset_at) != today {
+                continue;
+            }
+            summary.focus_ms = summary.focus_ms.saturating_add(r.active_ms);
+            match r.outcome {
+                Outcome::Completed => {
+                    summary.completed += 1;
+                    summary.harvest.push(HarvestItem::Acorn);
+                }
+                Outcome::Interrupted => {
+                    summary.interrupted += 1;
+                    summary.harvest.push(HarvestItem::Leaf);
+                }
+            }
+        }
+        summary.focus_label =
+            format_focus_label(summary.focus_ms.saturating_add(summary.active_focus_ms));
+        summary
     }
+}
+
+/// The local calendar day a record belongs to: the date of `ended_at` under its stored
+/// `ended_utc_offset_minutes` when present (and valid), else under `offset_at(ended_at)`.
+pub fn record_local_date(r: &SessionRecord, offset_at: &dyn Fn(Wall) -> FixedOffset) -> NaiveDate {
+    let offset = r
+        .ended_utc_offset_minutes
+        .and_then(|m| m.checked_mul(60))
+        .and_then(FixedOffset::east_opt)
+        .unwrap_or_else(|| offset_at(r.ended_at));
+    local_date(r.ended_at, offset)
+}
+
+/// `offset` expressed in whole minutes east of UTC (for `ended_utc_offset_minutes`).
+pub fn offset_minutes(offset: FixedOffset) -> i32 {
+    offset.local_minus_utc() / 60
 }
