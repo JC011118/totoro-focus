@@ -40,6 +40,9 @@ Discovery rules:
 - A symlinked pack folder is followed: the pack's root is the link's target.
   Inside a pack, every file must resolve to a location inside that root (see
   [File serving](#file-serving)).
+- Manifests and sheets must be regular files. A named pipe (FIFO), device or
+  socket with a manifest or sheet name counts as missing; the app never opens
+  one, so a stray pipe cannot stall loading.
 
 Invalid packs are still listed, with their errors, but cannot be activated. If
 the active pack disappears or becomes invalid, the placeholder renders, Settings
@@ -266,10 +269,18 @@ Settings → Companion lists every pack with its errors and warnings.
 - a base state that borrows another animation, for example `no "paused"
   animation; it uses "idle"`;
 - fallbacks that are unused, point to unknown keys, use invalid keys, or form a
-  cycle (which is cut);
+  cycle (which is cut). Each cycle is reported once, starting from its smallest
+  key in fallback order (`fallback cycle among a → c → b; the cycle is cut`);
+  a cycle of more than 8 keys lists the first 8 and its length;
 - dropped palette values and invalid palette ids;
 - no license declared, a blank name, or truncated text;
 - for dev packs, overriding a user pack.
+
+Settings lists at most 50 errors and 50 warnings per pack. When there are more,
+the 50th line counts the rest, for example `… and 1200 more warnings`. Fix the
+first ones and reload to see what remains. Validation time stays proportional to
+the size of `pack.json` (at most 256 KiB), however many animations or fallbacks
+it declares.
 
 ## File serving
 
@@ -281,6 +292,8 @@ refuses (with 404) anything that:
 - is unsafe by the path rules above, or is a hidden file;
 - has a type other than png, webp, gif, jpg, svg or json;
 - is larger than 16 MB;
+- is not a regular file (a directory, named pipe, device or socket), checked
+  before the file is opened;
 - resolves outside the pack folder. Symlinks are canonicalized first, so a link
   that points out of the pack is refused. A link to another file inside the pack
   works.
@@ -346,8 +359,9 @@ Conversion details:
 - **Name**: `displayName`, else the id. **Description**: `description`.
 - **Sheet**: `spritesheetPath` if it is a plain file name
   (`[A-Za-z0-9._-]{1,63}`, a raster type, not hidden), then `spritesheet.webp`,
-  then `spritesheet.png`. Each fallback adds a warning. If no sheet is found, or
-  it is larger than 16 MB, the pet is invalid.
+  then `spritesheet.png`. Each fallback adds a warning. A candidate that is not
+  a regular file (for example a named pipe) is skipped unopened. If no sheet is
+  found, or it is larger than 16 MB, the pet is invalid.
 - **Rows**: read from the PNG, WebP or GIF header without decoding. 11 rows if
   `height × 1536 ≥ width × 2288`, else 9. The size must then form an exact
   8-column grid of 192:208 cells, or the pet is invalid. If the size disagrees

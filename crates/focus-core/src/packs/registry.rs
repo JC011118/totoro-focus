@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 
 use crate::palette::{clean_text, sanitize_palette};
@@ -23,7 +23,8 @@ use super::paths::{encode_url_path, mime_for, normalized_key, safe_relative_path
 use super::petdex::{convert_petdex, image_dims, SheetInfo};
 use super::{
     BundledPack, PackFormatKind, PackInfo, PackManifest, PackSource, Rendering, ResolvedAnimation,
-    ResolvedPack, MAX_ASSET_BYTES, MAX_MANIFEST_BYTES, MAX_PACK_DIRS, PACK_FORMAT, PLACEHOLDER_ID,
+    ResolvedPack, MAX_ASSET_BYTES, MAX_LISTED_PROBLEMS, MAX_MANIFEST_BYTES, MAX_PACK_DIRS,
+    PACK_FORMAT, PLACEHOLDER_ID,
 };
 
 const MAX_NAME_CHARS: usize = 80;
@@ -88,6 +89,17 @@ fn clean(s: Option<&str>, max: usize, field: &str, warnings: &mut Vec<String>) -
         warnings.push(format!("{field} truncated to {max} characters"));
     }
     out
+}
+
+/// Keep the first `MAX_LISTED_PROBLEMS - 1` entries and count the rest in a
+/// last line, when there are more than `MAX_LISTED_PROBLEMS`.
+fn cap_problems(mut list: Vec<String>, what: &str) -> Vec<String> {
+    if list.len() > MAX_LISTED_PROBLEMS {
+        let more = list.len() - (MAX_LISTED_PROBLEMS - 1);
+        list.truncate(MAX_LISTED_PROBLEMS - 1);
+        list.push(format!("… and {more} more {what}"));
+    }
+    list
 }
 
 fn make_info(
@@ -182,13 +194,31 @@ fn disk_file_ok(root: &Path, rel: &str) -> bool {
     file_len_in_root(root, rel).is_some_and(|len| len <= MAX_ASSET_BYTES)
 }
 
+/// Open `canon` for reading only if it is a regular file.
+///
+/// The type is checked before `open`, because opening a named pipe (FIFO)
+/// blocks until a writer appears, which would hang pack loading (startup) or the
+/// `pack://` handler; devices and sockets are refused the same way. The opened
+/// handle is checked again, so a path replaced by a directory or another
+/// non-file in between is still refused. (A FIFO swapped in during that
+/// window would need a concurrently running local process; pack files are
+/// static.)
+fn open_regular_file(canon: &Path) -> io::Result<(fs::File, fs::Metadata)> {
+    let not_a_file = || io::Error::other("not a regular file");
+    if !fs::metadata(canon)?.is_file() {
+        return Err(not_a_file());
+    }
+    let f = fs::File::open(canon)?;
+    let meta = f.metadata()?;
+    if !meta.is_file() {
+        return Err(not_a_file());
+    }
+    Ok((f, meta))
+}
+
 fn disk_probe(root: &Path, rel: &str) -> Option<SheetInfo> {
     let canon = resolve_in_root(root, rel)?;
-    let f = fs::File::open(canon).ok()?;
-    let meta = f.metadata().ok()?;
-    if !meta.is_file() {
-        return None;
-    }
+    let (f, meta) = open_regular_file(&canon).ok()?;
     let mut header = Vec::with_capacity(HEADER_BYTES as usize);
     f.take(HEADER_BYTES).read_to_end(&mut header).ok()?;
     Some(SheetInfo {
@@ -201,7 +231,7 @@ fn disk_probe(root: &Path, rel: &str) -> Option<SheetInfo> {
 fn read_text(root: &Path, rel: &str, max: u64) -> Result<String, String> {
     let canon = resolve_in_root(root, rel)
         .ok_or_else(|| format!("{rel} cannot be read inside the pack folder"))?;
-    let f = fs::File::open(&canon).map_err(|e| format!("cannot read {rel}: {e}"))?;
+    let (f, _) = open_regular_file(&canon).map_err(|e| format!("cannot read {rel}: {e}"))?;
     let mut buf = Vec::new();
     f.take(max + 1)
         .read_to_end(&mut buf)
@@ -337,11 +367,12 @@ fn scan_dir(dir: &Path, source: PackSource) -> Vec<Candidate> {
         .collect()
 }
 
-/// Demote `c` to its unaddressable listing id with an error.
+/// Demote `c` to its unaddressable listing id with an error, listed first
+/// because it explains the listing id.
 fn demote(c: &mut Candidate, source: PackSource, error: String) {
     c.entry.info.id = format!("{}:{}", source_label(source), c.dir_name);
     c.entry.info.valid = false;
-    c.entry.info.errors.push(error);
+    c.entry.info.errors.insert(0, error);
     c.entry.manifest = None;
     c.entry.store = Store::None;
 }
@@ -470,7 +501,11 @@ impl PackRegistry {
     /// Missing directories are not errors. Hidden folders are skipped; a visible
     /// folder with neither manifest is listed with an error. At most
     /// `MAX_PACK_DIRS` folders are read per directory. See the module docs for
-    /// how listing ids stay unique.
+    /// how listing ids stay unique. Only regular files are ever opened, and
+    /// validation time is proportional to the manifest size, so a hostile
+    /// folder cannot stall the caller (the shell loads on its main thread).
+    /// `PackInfo.errors` and `.warnings` hold at most `MAX_LISTED_PROBLEMS`
+    /// entries each.
     pub fn load(bundled: BundledPack, user_dir: Option<&Path>, dev_dir: Option<&Path>) -> Self {
         let bundled = load_bundled(bundled);
         let user = user_dir
@@ -502,6 +537,10 @@ impl PackRegistry {
         let mut entries = Vec::with_capacity(disk.len() + 1);
         entries.push(bundled);
         entries.extend(disk);
+        for e in &mut entries {
+            e.info.errors = cap_problems(std::mem::take(&mut e.info.errors), "errors");
+            e.info.warnings = cap_problems(std::mem::take(&mut e.info.warnings), "warnings");
+        }
         for e in entries.iter().filter(|e| !e.info.valid) {
             log::warn!(
                 "packs: {} is not usable: {}",
@@ -652,8 +691,10 @@ impl PackRegistry {
     /// exceeds `MAX_ASSET_BYTES`.
     ///
     /// Only valid packs are served. Bundled files come from memory. For disk
-    /// packs the canonical target must also stay clear of hidden names and have
-    /// an allowed type itself.
+    /// packs the canonical target must also stay clear of hidden names, have
+    /// an allowed type itself, and be a regular file: a named pipe (FIFO),
+    /// device or socket is refused without being opened, so a request can
+    /// never block the protocol handler.
     pub fn read_file(&self, pack_id: &str, rel_path: &str) -> Option<(Vec<u8>, &'static str)> {
         let entry = self.find_valid(pack_id)?;
         let key = normalized_key(rel_path)?;
@@ -666,9 +707,8 @@ impl PackRegistry {
             Store::Dir(root) => {
                 let canon = resolve_in_root(root, &key)?;
                 mime_for(&canon)?;
-                let f = fs::File::open(&canon).ok()?;
-                let meta = f.metadata().ok()?;
-                if !meta.is_file() || meta.len() > MAX_ASSET_BYTES {
+                let (f, meta) = open_regular_file(&canon).ok()?;
+                if meta.len() > MAX_ASSET_BYTES {
                     return None;
                 }
                 let mut buf = Vec::with_capacity(meta.len() as usize);
@@ -711,6 +751,63 @@ mod tests {
         assert!(!rp.info.valid);
         assert!(rp.animations.values().all(Option::is_none));
         assert!(rp.animations.contains_key("idle"));
+    }
+
+    #[test]
+    fn problem_lists_are_capped() {
+        let list = |n: usize| (0..n).map(|i| format!("w{i}")).collect::<Vec<_>>();
+        assert_eq!(cap_problems(list(0), "warnings"), list(0));
+        assert_eq!(
+            cap_problems(list(MAX_LISTED_PROBLEMS), "warnings"),
+            list(MAX_LISTED_PROBLEMS)
+        );
+        let capped = cap_problems(list(MAX_LISTED_PROBLEMS + 1), "warnings");
+        assert_eq!(capped.len(), MAX_LISTED_PROBLEMS);
+        assert_eq!(
+            capped[..MAX_LISTED_PROBLEMS - 1],
+            list(MAX_LISTED_PROBLEMS - 1)
+        );
+        assert_eq!(capped.last().unwrap(), "… and 2 more warnings");
+        let capped = cap_problems(list(10_000), "errors");
+        assert_eq!(capped.len(), MAX_LISTED_PROBLEMS);
+        assert_eq!(
+            capped.last().unwrap(),
+            &format!("… and {} more errors", 10_000 - (MAX_LISTED_PROBLEMS - 1))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_file_refuses_fifos_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe.png");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo runs");
+        assert!(status.success());
+        // Opening a FIFO for reading blocks until a writer appears, so the
+        // type check must come first. Run on a thread so a regression fails
+        // instead of hanging the test run.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(
+                open_regular_file(&path)
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+            );
+        });
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("open_regular_file blocked on a FIFO");
+        assert_eq!(res, Err("not a regular file".to_string()));
+        assert!(open_regular_file(dir.path()).is_err(), "directories too");
+        assert!(open_regular_file(&dir.path().join("missing.png")).is_err());
+        let file = dir.path().join("ok.png");
+        fs::write(&file, b"abc").unwrap();
+        let (_, meta) = open_regular_file(&file).unwrap();
+        assert_eq!(meta.len(), 3);
     }
 
     #[test]

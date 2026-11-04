@@ -46,6 +46,10 @@ pub const MAX_FPS: f32 = 60.0;
 pub const MAX_FRAME_DURATION_MS: u32 = 60_000;
 /// Max pack folders scanned per source directory.
 pub const MAX_PACK_DIRS: usize = 256;
+/// Max entries in `PackInfo.errors`, and separately in `PackInfo.warnings`. A
+/// longer list keeps its first `MAX_LISTED_PROBLEMS - 1` entries and ends with
+/// a line counting the rest (`… and 12 more warnings`).
+pub const MAX_LISTED_PROBLEMS: usize = 50;
 /// Max path length (bytes) and depth accepted by `safe_relative_path`.
 pub const MAX_PATH_LEN: usize = 512;
 pub const MAX_PATH_DEPTH: usize = 16;

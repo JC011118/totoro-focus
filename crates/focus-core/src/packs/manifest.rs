@@ -1,6 +1,6 @@
 //! `pack.json` parsing, validation, animation resolution and render keys.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::palette::sanitize_palette;
@@ -274,25 +274,82 @@ fn validate_fallbacks(m: &PackManifest, warnings: &mut Vec<String>) {
             ));
         }
     }
-    // Cycles among the pack's own fallback edges, reported once each.
-    let mut cycles = BTreeSet::new();
-    for start in m.fallbacks.keys() {
-        let mut path: Vec<&str> = vec![start];
+    for c in fallback_cycles(&m.fallbacks) {
+        warnings.push(format!(
+            "fallback cycle among {}; the cycle is cut",
+            describe_cycle(&c)
+        ));
+    }
+}
+
+/// Keys of a fallback cycle listed in a warning; longer cycles are elided.
+const MAX_CYCLE_KEYS_SHOWN: usize = 8;
+
+/// Every cycle among the pack's own fallback edges, each exactly once, in edge
+/// order starting from its smallest key; the list is sorted.
+///
+/// Each key has at most one outgoing edge (the map is a functional graph), so
+/// one walk per unvisited key finds every cycle: a walk stops at a key it has
+/// already put on its own path (a new cycle), at a key an earlier walk finished
+/// (nothing new beyond it), or at a key without a fallback. Every key is walked
+/// once, so a manifest with thousands of entries costs O(n log n), not the
+/// quadratic-or-worse of restarting the walk from every key.
+fn fallback_cycles(fallbacks: &BTreeMap<String, String>) -> Vec<Vec<&str>> {
+    enum Mark {
+        /// On the current walk's path, at this index.
+        OnPath(usize),
+        /// Finished by an earlier walk.
+        Done,
+    }
+    let mut marks: BTreeMap<&str, Mark> = BTreeMap::new();
+    let mut cycles: Vec<Vec<&str>> = Vec::new();
+    let mut path: Vec<&str> = Vec::new();
+    for start in fallbacks.keys() {
+        if marks.contains_key(start.as_str()) {
+            continue;
+        }
         let mut cur = start.as_str();
-        while let Some(next) = m.fallbacks.get(cur) {
-            if let Some(pos) = path.iter().position(|&p| p == next) {
-                let mut members: Vec<&str> = path[pos..].to_vec();
-                members.sort_unstable();
-                cycles.insert(members.join(" → "));
-                break;
+        loop {
+            match marks.get(cur) {
+                Some(Mark::Done) => break,
+                Some(Mark::OnPath(pos)) => {
+                    let mut members = path[*pos..].to_vec();
+                    let first = members
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, k)| **k)
+                        .map_or(0, |(i, _)| i);
+                    members.rotate_left(first);
+                    cycles.push(members);
+                    break;
+                }
+                None => {}
             }
-            path.push(next);
+            let Some(next) = fallbacks.get(cur) else {
+                break;
+            };
+            marks.insert(cur, Mark::OnPath(path.len()));
+            path.push(cur);
             cur = next;
         }
+        for k in path.drain(..) {
+            marks.insert(k, Mark::Done);
+        }
     }
-    for c in cycles {
-        warnings.push(format!("fallback cycle among {c}; the cycle is cut"));
+    cycles.sort_unstable();
+    cycles
+}
+
+/// `a → b → c`, or the first `MAX_CYCLE_KEYS_SHOWN` keys and a count.
+fn describe_cycle(members: &[&str]) -> String {
+    if members.len() <= MAX_CYCLE_KEYS_SHOWN {
+        return members.join(" → ");
     }
+    format!(
+        "{} → … ({} keys)",
+        members[..MAX_CYCLE_KEYS_SHOWN].join(" → "),
+        members.len()
+    )
 }
 
 /// Resolve `key` to `(source_key, spec)`: the pack's own animation, then the
@@ -374,6 +431,76 @@ mod tests {
         ] {
             assert!(!is_valid_pack_id(bad), "{bad}");
         }
+    }
+
+    fn fallbacks(edges: &[(&str, &str)]) -> BTreeMap<String, String> {
+        edges
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn fallback_cycles_are_found_once_in_edge_order() {
+        // Two tails (x → y → b, z → c) lead into the cycle a → c → b → a; a
+        // self-loop; a chain into a dead end; an edge into the built-in chain.
+        let fb = fallbacks(&[
+            ("x", "y"),
+            ("y", "b"),
+            ("z", "c"),
+            ("c", "b"),
+            ("b", "a"),
+            ("a", "c"),
+            ("wave", "wave"),
+            ("m", "n"),
+            ("n", "nowhere"),
+            ("paused", "focus"),
+        ]);
+        assert_eq!(
+            fallback_cycles(&fb),
+            vec![vec!["a", "c", "b"], vec!["wave"]],
+            "rotated to the smallest key, edges kept in order"
+        );
+        assert!(fallback_cycles(&BTreeMap::new()).is_empty());
+        assert!(fallback_cycles(&fallbacks(&[("a", "b"), ("b", "c")])).is_empty());
+        // The walk from the tail key "a" enters the cycle at q; it still reads
+        // from its smallest key.
+        let fb = fallbacks(&[("a", "q"), ("q", "p"), ("p", "r"), ("r", "q")]);
+        assert_eq!(fallback_cycles(&fb), vec![vec!["p", "r", "q"]]);
+    }
+
+    #[test]
+    fn many_cycles_and_long_cycles() {
+        // 1,000 two-key cycles, each with a tail, and one 3,000-key cycle.
+        let mut fb = BTreeMap::new();
+        for i in 0..1000 {
+            fb.insert(format!("a{i:04}"), format!("b{i:04}"));
+            fb.insert(format!("b{i:04}"), format!("a{i:04}"));
+            fb.insert(format!("t{i:04}"), format!("b{i:04}"));
+        }
+        for i in 0..3000 {
+            fb.insert(format!("r{i:04}"), format!("r{:04}", (i + 1) % 3000));
+        }
+        let cycles = fallback_cycles(&fb);
+        assert_eq!(cycles.len(), 1001);
+        assert_eq!(cycles[0], vec!["a0000", "b0000"]);
+        let long = cycles.iter().find(|c| c.len() == 3000).unwrap();
+        assert_eq!(long[..3], ["r0000", "r0001", "r0002"]);
+        assert_eq!(long[2999], "r2999");
+    }
+
+    #[test]
+    fn long_cycles_are_elided_in_warnings() {
+        assert_eq!(describe_cycle(&["a"]), "a");
+        let eight: Vec<String> = (0..8).map(|i| format!("k{i}")).collect();
+        let eight: Vec<&str> = eight.iter().map(String::as_str).collect();
+        assert_eq!(describe_cycle(&eight), eight.join(" → "));
+        let many: Vec<String> = (0..500).map(|i| format!("k{i:03}")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(
+            describe_cycle(&many),
+            "k000 → k001 → k002 → k003 → k004 → k005 → k006 → k007 → … (500 keys)"
+        );
     }
 
     #[test]
